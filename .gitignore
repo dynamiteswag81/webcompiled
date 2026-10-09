@@ -74,3 +74,11 @@ output.txt
 
 # Operating System
 .DS_Store
+
+# Web port: build output and local game data (never commit game files or translated code)
+/web/build/
+/web/dist/
+/web/game/
+/game/
+*.wasm
+DATA/
