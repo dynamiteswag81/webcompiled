@@ -220,13 +220,21 @@ unless it says "local" (verified by the local session with the real game files).
   writes and when the page is hidden. Run logs go to `/tmp` (not persisted).
 * Fatal reports reach the page (`mkw_host_report_fatal` → `Module.onMkwFatal`).
 
-### In progress
-* Drop-in hosting: `web/host.sh` / `host.ps1` (drop a disc image or extracted
-  tree into `web/game/`, build once with a cached fingerprint, serve),
-  `compose.yaml` + `web/docker/Dockerfile`.
-* Retro Rewind: the build-script leg (`translate-mod`, `RetroRewind` target,
-  `dist/mods/RetroRewind6/` + manifest, `products.json`), the start-screen
-  product choice, and the runtime mount of the pack (streamed like the disc).
+* Drop-in hosting: `web/host.sh` / `web/host.ps1` (game files dropped into
+  `web/game/`: one disc image or an extracted DATA tree, optionally
+  `RetroRewind6/`; fingerprint-cached build, then serve), `compose.yaml` +
+  `web/docker/Dockerfile`. Verified with stub builds (bash and PowerShell 7)
+  and a container built from prefetched tools.
+* Retro Rewind: `translate-mod --skip-retro-wfc` leg and `RetroRewind` target
+  in the build scripts; `dist/products.json` and a start-screen choice
+  (`?product=`, `Module.mkwProduct`); the pack streams as a second WebDisc
+  mount (`/mods/RetroRewind6`, `make_disc_manifest.py --tree`) and the real
+  Riivolution code applies it (`web/tests/web_riivolution_test.cpp`, 41
+  checks against a fake pack). Riivolution saves redirect into IDBFS.
+
+### Not verified yet
+* The shipped Dockerfile's apt/emsdk/nodtool steps (this sandbox blocks the
+  Debian mirrors); everything after them was run.
 
 ### Needs the real game (local session)
 * Full pipeline end to end: `web/build.sh <image>` (or `build.ps1`, which has
@@ -274,7 +282,8 @@ Build: `emcmake cmake -S aurora-main -B build-web -G Ninja
 
 ## Work plan
 
-1. [x] `web/build.sh` / `web/build.ps1` (extract → translate → emcmake → dist).
+1. [x] `web/build.sh` / `web/build.ps1` (extract → translate → emcmake → dist),
+       `web/host.sh` / `host.ps1`, Docker, Retro Rewind.
 2. [x] aurora: Emscripten build, validated with its own example.
 3. [x] runtime: wasm guest memory backend.
 4. [x] runtime: JSPI `HostContext` backend + JS library.
