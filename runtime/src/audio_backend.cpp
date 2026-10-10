@@ -36,6 +36,26 @@ void AudioBackend::SetMuted(bool muted) {
     ApplyGainLocked();
 }
 
+void AudioBackend::SetOutputPaused(bool paused) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_outputPaused == paused) {
+        return;
+    }
+    m_outputPaused = paused;
+    if (!m_stream) {
+        return;
+    }
+    const bool ok = paused ? SDL_PauseAudioStreamDevice(m_stream) : SDL_ResumeAudioStreamDevice(m_stream);
+    if (!ok) {
+        RT_LOG(RT_TAG_AUDIO) << (paused ? "SDL_PauseAudioStreamDevice" : "SDL_ResumeAudioStreamDevice")
+                             << " failed: " << SDL_GetError() << std::endl;
+    }
+    if (!paused) {
+        // Allow the next overflow (if any) to be reported again.
+        m_reportedDroppedBlock = false;
+    }
+}
+
 bool AudioBackend::EnsureInitializedLocked(uint32_t sampleRate, uint32_t channels) {
     if (m_initialized && m_sampleRate == sampleRate && m_channels == channels) {
         return true;
@@ -62,7 +82,8 @@ bool AudioBackend::EnsureInitializedLocked(uint32_t sampleRate, uint32_t channel
         return false;
     }
 
-    if (!SDL_ResumeAudioStreamDevice(stream)) {
+    // A stream opened while output is paused (page hidden) starts paused too.
+    if (!m_outputPaused && !SDL_ResumeAudioStreamDevice(stream)) {
         RT_LOG(RT_TAG_AUDIO) << "SDL_ResumeAudioStreamDevice failed: " << SDL_GetError() << std::endl;
         SDL_DestroyAudioStream(stream);
         return false;

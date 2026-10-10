@@ -77,6 +77,21 @@ static std::array<char, 256> g_deviceLostMessage{};
 // Errors raised before initialize() completes must not be fatal: the backend fallback loop retries
 // the next backend, and a broken ICD can raise uncaptured errors mid-probe.
 static std::atomic_bool g_initialized{false};
+// Uncaptured WebGPU errors that were reported but not treated as fatal (web only; native stays fatal).
+static std::atomic<uint64_t> g_uncapturedErrorCount{0};
+
+#ifdef __EMSCRIPTEN__
+// Browser WebGPU always validates, and one rejected command must not end the session: the command
+// (or the encoder it was recorded on) is dropped and rendering continues. Log the first few in full,
+// then at powers of two so a per-draw error cannot flood the page's report.
+static void report_nonfatal_webgpu_error(wgpu::ErrorType type, std::string_view message) noexcept {
+  const uint64_t count = g_uncapturedErrorCount.fetch_add(1, std::memory_order_relaxed) + 1;
+  constexpr uint64_t kLogFirst = 8;
+  if (count <= kLogFirst || (count & (count - 1)) == 0) {
+    Log.error("WebGPU error {} (#{}, not fatal on the web): {}", underlying(type), count, message);
+  }
+}
+#endif
 
 namespace {
 
@@ -753,6 +768,13 @@ bool initialize(AuroraBackend auroraBackend) {
     deviceDescriptor.SetUncapturedErrorCallback(
         [](const wgpu::Device& device, wgpu::ErrorType type, wgpu::StringView message) {
           if (g_initialized.load(std::memory_order_acquire)) {
+#ifdef __EMSCRIPTEN__
+            // Out-of-memory stays fatal; device loss is handled by the device-lost callback.
+            if (type != wgpu::ErrorType::OutOfMemory) {
+              report_nonfatal_webgpu_error(type, std::string_view{message});
+              return;
+            }
+#endif
             FATAL("WebGPU error {}: {}", underlying(type), message);
           } else {
             Log.warn("WebGPU error {}: {}", underlying(type), message);
@@ -865,6 +887,8 @@ bool initialize(AuroraBackend auroraBackend) {
   g_initialized.store(true, std::memory_order_release);
   return true;
 }
+
+uint64_t uncaptured_error_count() noexcept { return g_uncapturedErrorCount.load(std::memory_order_relaxed); }
 
 void fail_if_device_lost() noexcept {
   if (!g_deviceLost.load(std::memory_order_acquire)) {

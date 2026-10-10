@@ -1,7 +1,19 @@
 // Drives the real web product (built against the synthetic translation) through startup in
 // headless Chromium and reports the furthest milestone reached.
 //
-//   node web/tests/smoke/smoke_test.mjs URL LOGFILE [TIMEOUT_SECONDS]
+//   node web/tests/smoke/smoke_test.mjs URL LOGFILE [TIMEOUT_SECONDS] [FRAMES]
+//
+// FRAMES (default 0) is the length of the synthetic entry point's GXCopyDisp frame loop
+// (make_synthetic_generated.py --frames). When it is non-zero the driver also checks the page
+// visibility handling (docs/web-test-report.md C2/C3):
+//   * startup with the page hidden and the canvas 0x0: aurora must wait for a visible, laid-out
+//     canvas before creating the surface, then start normally once it is shown;
+//   * hiding the page mid-run: presented frames (Module.mkwFramesPresented) must stop, the runtime
+//     must report itself parked (Module.mkwPaused), nothing may trap, and frames must resume after
+//     the page is shown again.
+// The page is hidden for real by bringing a second page of the same browser context to the front;
+// if headless Chromium does not report that as document.visibilityState 'hidden', the driver falls
+// back to overriding visibilityState and dispatching visibilitychange (and says so in the log).
 //
 // URL serves web/site + WiiCompiled.js/.wasm (run_smoke.sh does that with web/serve.py). Every
 // console line, page error and the final verdict go to LOGFILE with fs.appendFileSync, and the
@@ -13,12 +25,13 @@
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-const [url, logFile, timeoutArg] = process.argv.slice(2);
+const [url, logFile, timeoutArg, framesArg] = process.argv.slice(2);
 if (!url || !logFile) {
-  console.error('usage: smoke_test.mjs URL LOGFILE [TIMEOUT_SECONDS]');
+  console.error('usage: smoke_test.mjs URL LOGFILE [TIMEOUT_SECONDS] [FRAMES]');
   process.exit(2);
 }
 const timeoutMs = Number(timeoutArg || 180) * 1000;
+const expectedFrames = Number(framesArg || 0);
 fs.writeFileSync(logFile, '');
 const t0 = Date.now();
 function log(line) {
@@ -38,11 +51,25 @@ const MILESTONES = [
   { id: 'video-config', what: 'video / surface configured after aurora init', re: /\[runtime-config\] video\.widescreen=/ },
   { id: 'dvd-stop', what: 'translated entry point ran and DVDInit stopped cleanly: no disc data configured', re: /\[dvd\] ERROR: (No DVD root is configured|Configured DVD root is not an extracted DATA directory|.*(manifest|disc tree|disc-manifest))/i },
   { id: 'fatal-reported', what: 'runtime fatal report reached the page error overlay', re: /DVD data is unavailable/ },
+  // Visibility checks (only with a frame loop; see the header). Not startup order either.
+  { id: 'hidden-start-waited', post: true, frames: true, what: 'started hidden with a 0x0 canvas: aurora waited for the canvas, then initialized once shown' },
+  { id: 'frames-presented', post: true, frames: true, what: 'the frame loop presented frames through GXCopyDisp / VI_HLE_PresentFrame' },
+  { id: 'hidden-parked', post: true, frames: true, what: 'page hidden mid-run: frames stopped and the runtime parked (no trap)' },
+  { id: 'resumed', post: true, frames: true, what: 'page shown again: the runtime resumed and presented more frames' },
   // Checked after the stop through Module.FS (not startup order, so never the "furthest" one).
   { id: 'app-assets', post: true, what: 'embedded /app assets present (dsp_coef.bin, wii_bootstrap/)' },
   { id: 'home-config', post: true, what: 'Config.toml written under $HOME (/home/web_user)' },
 ];
+for (let i = MILESTONES.length - 1; i >= 0; --i) {
+  if (MILESTONES[i].frames && !expectedFrames) MILESTONES.splice(i, 1);
+}
 const reached = new Set();
+function reach(id) {
+  if (reached.has(id)) return;
+  reached.add(id);
+  log(`MILESTONE ${id}: ${MILESTONES.find((m) => m.id === id).what}`);
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lines = [];
 function noteLine(text) {
   lines.push(text);
@@ -75,7 +102,8 @@ try {
     args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--use-vulkan=swiftshader',
       '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader', '--no-sandbox'],
   });
-  const page = await (await browser.newContext({ viewport: { width: 1280, height: 720 } })).newPage();
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const page = await context.newPage();
   const badLines = [];
   page.on('console', (msg) => {
     for (const line of msg.text().split('\n')) {
@@ -101,6 +129,95 @@ try {
   reached.add('page-ready');
   log(`MILESTONE page-ready: ${MILESTONES[0].what}`);
   await page.click('#btn-start');
+
+  // Page visibility helpers. `cover` is a second page of the same context: bringing it to the front
+  // hides `page` the way switching tabs does.
+  let cover = null;
+  let emulatedHide = false;
+  const visibility = () => page.evaluate(() => document.visibilityState);
+  async function hidePage(why) {
+    if (!cover) {
+      cover = await context.newPage();
+      await cover.goto('about:blank');
+    }
+    await cover.bringToFront();
+    for (let i = 0; i < 20 && (await visibility()) !== 'hidden'; ++i) await sleep(100);
+    emulatedHide = (await visibility()) !== 'hidden';
+    if (emulatedHide) {
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    }
+    log(`page hidden (${why}) via ${emulatedHide ? 'emulated visibilityState (bringToFront did not hide it)' : 'a second page brought to the front'}: visibilityState=${await visibility()}`);
+  }
+  async function showPage() {
+    await page.bringToFront();
+    if (emulatedHide) {
+      await page.evaluate(() => {
+        delete document.visibilityState;
+        delete document.hidden;
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      emulatedHide = false;
+    }
+    for (let i = 0; i < 20 && (await visibility()) !== 'visible'; ++i) await sleep(100);
+    log(`page shown: visibilityState=${await visibility()}`);
+  }
+  const frameState = () => page.evaluate(() => ({
+    frames: (window.Module && window.Module.mkwFramesPresented) || 0,
+    paused: !!(window.Module && window.Module.mkwPaused),
+    parks: (window.Module && window.Module.mkwParkCount) || 0,
+    errorShown: !document.getElementById('error').hidden,
+  }));
+  async function waitFor(predicate, ms, what) {
+    const end = Date.now() + ms;
+    for (;;) {
+      const state = await frameState();
+      if (predicate(state)) return state;
+      if (state.errorShown || Date.now() > end) {
+        log(`gave up waiting for ${what}: ${JSON.stringify(state)}`);
+        return null;
+      }
+      await sleep(250);
+    }
+  }
+
+  if (expectedFrames) {
+    // C3: start while the page is hidden and the canvas is 0x0 (display: none). The click above
+    // only loads the glue; aurora_initialize runs a few seconds later, after the hide below.
+    await page.evaluate(() => { document.getElementById('canvas').style.display = 'none'; });
+    await hidePage('startup');
+    await sleep(6000);
+    const sawWait = lines.some((l) => /Waiting for the canvas before creating the surface/.test(l));
+    const initializedEarly = reached.has('aurora-webgpu');
+    log(`hidden start: aurora waited=${sawWait}, aurora initialized while hidden=${initializedEarly}`);
+    await page.evaluate(() => { document.getElementById('canvas').style.display = ''; });
+    await showPage();
+    const started = await waitFor((s) => s.frames >= 60, 90000, '60 presented frames after the hidden start');
+    if (started) {
+      reach('frames-presented');
+      if (sawWait && !initializedEarly && lines.some((l) => /Canvas is ready; creating the surface/.test(l))) {
+        reach('hidden-start-waited');
+      }
+    }
+    if (started && started.frames < expectedFrames - 120) {
+      // C2: hide mid-run for a while. Frames must stop (at most the one in flight) and resume.
+      await hidePage('mid-run');
+      await sleep(1500);
+      const before = await frameState();
+      await sleep(6000);
+      const after = await frameState();
+      log(`while hidden: frames ${before.frames} -> ${after.frames}, parked=${after.paused}, parks=${after.parks}`);
+      if (after.frames - before.frames <= 1 && after.paused && !after.errorShown) reach('hidden-parked');
+      await showPage();
+      const resumed = await waitFor((s) => s.frames >= after.frames + 30 && !s.paused, 60000, '30 frames after showing the page');
+      if (resumed && lines.some((l) => /page visible: resumed after \d+ ms/.test(l))) reach('resumed');
+    } else if (started) {
+      log(`frame loop too short to test a mid-run hide (${started.frames} of ${expectedFrames} frames already presented)`);
+    }
+  }
 
   // Wait for the error overlay (expected end) or the timeout; poll so the log keeps flowing.
   const deadline = Date.now() + timeoutMs;

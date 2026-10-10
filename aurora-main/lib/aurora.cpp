@@ -27,6 +27,18 @@
 #include <windows.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <SDL3/SDL_hints.h>
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#endif
+
+#ifdef __EMSCRIPTEN__
+EM_JS(int, aurora_web_page_hidden, (), {
+  return (typeof document !== 'undefined' && document.visibilityState === 'hidden') ? 1 : 0;
+});
+#endif
+
 #include <atomic>
 #include <algorithm>
 #include <array>
@@ -651,6 +663,40 @@ constexpr std::array<AuroraBackend, 0> PreferredBackendOrder{};
 
 bool g_initialFrame = false;
 
+#ifdef __EMSCRIPTEN__
+// A surface created while the page is hidden or the canvas is 0x0 gets no size: no render targets,
+// a NaN display scale, and a first render pass without a depth attachment. Wait (suspending
+// through JSPI, so the page keeps running) until the canvas is visible and laid out. A missing
+// canvas element is not waited for: SDL reports that itself.
+void wait_for_web_canvas() noexcept {
+  const char* selector = SDL_GetHint(SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR);
+  if (selector == nullptr || *selector == '\0') {
+    selector = "#canvas";
+  }
+  bool waited = false;
+  for (;;) {
+    double cssWidth = 0.0;
+    double cssHeight = 0.0;
+    if (emscripten_get_element_css_size(selector, &cssWidth, &cssHeight) != EMSCRIPTEN_RESULT_SUCCESS) {
+      break;
+    }
+    const bool hidden = aurora_web_page_hidden() != 0;
+    if (cssWidth >= 1.0 && cssHeight >= 1.0 && !hidden) {
+      break;
+    }
+    if (!waited) {
+      Log.info("Waiting for the canvas before creating the surface ({} is {}x{}, page {})", selector, cssWidth,
+               cssHeight, hidden ? "hidden" : "visible");
+      waited = true;
+    }
+    emscripten_sleep(50);
+  }
+  if (waited) {
+    Log.info("Canvas is ready; creating the surface");
+  }
+}
+#endif
+
 
 AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexcept {
   g_config = config;
@@ -692,6 +738,9 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   g_sdlCustomEventsStart = SDL_RegisterEvents(2);
   ASSERT(g_sdlCustomEventsStart, "Failed to allocate user events: {}", SDL_GetError());
   ASSERT(window::initialize_event_watch(), "Error initializing SDL event watch");
+#ifdef __EMSCRIPTEN__
+  wait_for_web_canvas();
+#endif
 
 #ifdef AURORA_ENABLE_GX
   /* Attempt to create a window using the calling application's desired backend */

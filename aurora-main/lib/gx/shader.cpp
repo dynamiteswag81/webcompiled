@@ -1474,7 +1474,18 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
   // else reversed-Z-aware uses. This was backwards (verified directly against upstream aurora's
   // identical expression in build_shader_source), which fed both fog density and the GX_ZT_ADD
   // z-texture path the wrong distance value.
-  std::string fogDepthExpr = UseReversedZ ? "(1.0 - in.pos.z)" : "in.pos.z";
+  //
+  // With depthRangeFixup the pass viewport is [0, 1], so in.pos.z is the bare host NDC z; the depth the
+  // GX viewport would store (clamped like the hardware) is computed here and used everywhere in.pos.z was.
+  std::string hostDepthExpr = "in.pos.z";
+  if (config.depthRangeFixup) {
+    fragmentFnPre +=
+        "\n    // GX depth range outside [0, 1]: apply it (and GX's clamp) per fragment."
+        "\n    let depth_mapping = bitcast<vec2f>(ubuf.pad);"
+        "\n    let gx_host_depth = clamp(depth_mapping.x + depth_mapping.y * in.pos.z, 0.0, 1.0);";
+    hostDepthExpr = "gx_host_depth";
+  }
+  std::string fogDepthExpr = UseReversedZ ? fmt::format("(1.0 - {})", hostDepthExpr) : hostDepthExpr;
   std::string fogZCoordExpr =
       fmt::format("u32(round(clamp({}, 0.0, 1.0) * 16777216.0))", fogDepthExpr);
   if (usesZTextureDepth) {
@@ -1507,7 +1518,7 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
       fragmentFn += fmt::format(
           "\n    let oldZ = u32(round(clamp({0}, 0.0, 1.0) * 16777216.0));"
           "\n    ztexCoord = (ztexCoord + oldZ) & 0x00ffffffu;",
-          UseReversedZ ? "(1.0 - in.pos.z)" : "in.pos.z");
+          fogDepthExpr);
     }
     fragmentFn += "\n    let ztexDepth = f32(ztexCoord) / 16777216.0;";
     fogZCoordExpr = "ztexCoord";
@@ -1640,7 +1651,7 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
 
   std::string fragmentReturnType = "@location(0) vec4f";
   std::string fragmentReturn = "    return prev;";
-  if (usesZTextureDepth) {
+  if (usesZTextureDepth || config.depthRangeFixup) {
     uniformPre +=
         "\n"
         "struct FragmentOutput {\n"
@@ -1654,7 +1665,11 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
     // the same way fogDepthExpr was (verified by the same derivation, since aurora upstream has no
     // directly equivalent line here to cross-check against - this z-texture-depth-output path
     // appears to be specific to this fork).
-    fragmentFn += fmt::format("\n    let fragDepth = {}ztexDepth;", UseReversedZ ? "1.0 - " : "");
+    if (usesZTextureDepth) {
+      fragmentFn += fmt::format("\n    let fragDepth = {}ztexDepth;", UseReversedZ ? "1.0 - " : "");
+    } else {
+      fragmentFn += "\n    let fragDepth = gx_host_depth;";
+    }
     fragmentReturnType = "FragmentOutput";
     fragmentReturn =
         "    var out: FragmentOutput;\n"

@@ -64,6 +64,8 @@ void shutdown();
 // Device-loss callbacks may run on a Dawn-managed thread and only publish loss state; frame
 // threads call this at ordered boundaries to turn it into the one user-visible fatal error.
 void fail_if_device_lost() noexcept;
+// Uncaptured WebGPU errors reported without aborting (web builds; always 0 natively).
+uint64_t uncaptured_error_count() noexcept;
 void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);
 void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,

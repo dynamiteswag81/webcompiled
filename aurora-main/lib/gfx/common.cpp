@@ -194,6 +194,10 @@ struct RenderPass {
 };
 static std::vector<RenderPass> g_renderPasses;
 static u32 g_currentRenderPass = UINT32_MAX;
+// True between a successful begin_frame_impl() and the end_batch()/abort_frame() that closes it: the
+// staging ByteBuffers (g_verts, g_uniforms, ...) are views of the mapped staging buffer only then.
+// Outside a frame they fall back to plain heap memory that is never uploaded; see push()/map().
+static std::atomic_bool g_frameOpen{false};
 
 // Recycle command storage: discarding passes used to free their command lists too, so each frame
 // rebuilt hundreds of KB from zero capacity. The passes themselves are cheap to recreate.
@@ -291,6 +295,11 @@ void set_staging_capacity_limits_for_testing(const StagingSizes& limits) {
   g_stagingHighWater = {};
 }
 bool staging_has_space(const StagingSizes& demand) {
+  if (!g_frameOpen.load(std::memory_order_relaxed)) {
+    // Nothing recorded outside a frame reaches the GPU (push()/map() keep it to one scratch
+    // allocation), so there is no capacity to run out of, and no batch that could be split.
+    return true;
+  }
   // Async readback preparation runs in the worker's noexcept seal prologue.
   // Reserve all 32 slots plus the uniform binding's 3840-byte trailing window.
   const StagingSizes tail{0, gx::MaxUniformSize + efb_ram::MaxAsyncReadbackSlots * staging_uniform_bytes(48), 0, 0};
@@ -467,10 +476,21 @@ struct OffscreenCacheEntry {
 static absl::flat_hash_map<OffscreenCacheKey, OffscreenCacheEntry> g_offscreenCache;
 std::vector<TextureUpload> g_textureUploads;
 
+// GX work recorded while no frame is active is dropped one command at a time; while frames keep
+// failing to begin (a hidden window) that is every command, so report the first few and then only
+// every power of two instead of flooding the log.
+static bool should_log_dropped_work() noexcept {
+  static uint64_t s_droppedWork = 0;
+  ++s_droppedWork;
+  return s_droppedWork <= 16 || (s_droppedWork & (s_droppedWork - 1)) == 0;
+}
+
 static inline void push_command(CommandType type, const Command::Data& data) {
   if (!has_current_render_pass())
     UNLIKELY {
-      Log.warn("Dropping command {}", magic_enum::enum_name(type));
+      if (should_log_dropped_work()) {
+        Log.warn("Dropping command {} without an active render pass", magic_enum::enum_name(type));
+      }
       return;
     }
   g_renderPasses[g_currentRenderPass].commands.push_back({
@@ -484,7 +504,7 @@ static inline void push_command(CommandType type, const Command::Data& data) {
 
 template <>
 gx::DrawData* get_last_draw_command() {
-  if (g_currentRenderPass >= g_renderPasses.size()) {
+  if (g_currentRenderPass >= g_renderPasses.size() || g_renderPasses[g_currentRenderPass].commands.empty()) {
     return nullptr;
   }
   auto& last = g_renderPasses[g_currentRenderPass].commands.back();
@@ -560,7 +580,9 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
                   float copyFilterRowStride, bool clampTop, bool clampBottom, bool persistentCopy) {
   // Resolve current render pass
   if (!has_current_render_pass()) {
-    Log.warn("Dropping resolve pass without an active render pass");
+    if (should_log_dropped_work()) {
+      Log.warn("Dropping resolve pass without an active render pass");
+    }
     return;
   }
   ensure_staging_space({0, 2 * staging_uniform_bytes(48), 0, 0});
@@ -707,7 +729,9 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
 
 void queue_palette_conv(tex_palette_conv::ConvRequest req) {
   if (!has_current_render_pass()) {
-    Log.warn("Dropping palette conversion without an active render pass");
+    if (should_log_dropped_work()) {
+      Log.warn("Dropping palette conversion without an active render pass");
+    }
     return;
   }
   g_renderPasses[g_currentRenderPass].paletteConvs.push_back(std::move(req));
@@ -1029,6 +1053,7 @@ void shutdown() {
   g_uniformBindGroup = {};
   g_uniformBindGroupLayout = {};
   g_inOffscreen = false;
+  g_frameOpen.store(false, std::memory_order_relaxed);
   g_frameIndex = UINT32_MAX;
   currentStagingBuffer = 0;
 }
@@ -1059,6 +1084,17 @@ void map_staging_buffer() {
 
 static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
   ZoneScoped;
+  if (!webgpu::g_frameBuffer.view || !webgpu::g_depthBuffer.view) {
+    // The EFB targets are created by the first swapchain resize with a non-zero size; a frame
+    // begun before that would record passes with no attachments. Wait for the resize instead.
+    static uint32_t s_noTargetCount = 0;
+    if (s_noTargetCount < 16 || (s_noTargetCount & 1023) == 0) {
+      Log.warn("begin_frame deferred: render targets not created yet (window size 0x0?) (occurrences={})",
+               s_noTargetCount + 1);
+    }
+    ++s_noTargetCount;
+    return false;
+  }
   {
     ZoneScopedN("Wait for buffer map");
     map_staging_buffer();
@@ -1134,6 +1170,12 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
   g_cachedScissor = mappedRenderState.scissor;
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+  // Ranges cached while no frame was open point into discarded scratch memory, not this frame's
+  // staging buffer (a frame can begin mid-guest-frame, e.g. after a failed begin was retried).
+  for (auto& array : gx::g_gxState.arrays) {
+    array.cachedRange = {};
+  }
+  g_frameOpen.store(true, std::memory_order_relaxed);
   begin_pipeline_frame();
   return true;
 }
@@ -1143,6 +1185,7 @@ bool begin_frame() { return begin_frame_impl(true); }
 bool resume_frame() { return begin_frame_impl(false); }
 
 void abort_frame() noexcept {
+  g_frameOpen.store(false, std::memory_order_relaxed);
   efb_ram::cancel();
   efb_ram::abort_async();
   g_verts.release();
@@ -1173,8 +1216,47 @@ void abort_frame() noexcept {
   end_pipeline_frame();
 }
 
+// end_frame()/end_batch() without an open frame (begin_frame() failed or was never called - e.g. the
+// window was hidden or minimized when the guest finished its frame). There is no mapped staging
+// buffer to upload: the current one may still have its map pending, and unmapping/rotating it here
+// used to abort that map, upload the heap scratch sizes from the wrong buffer and leave the staging
+// state machine out of step with the frame. Discard what was recorded instead.
+static void end_unopened_batch(bool advanceFrame) noexcept {
+  static uint32_t s_unopenedEndCount = 0;
+  if (s_unopenedEndCount < 16 || (s_unopenedEndCount & 1023) == 0) {
+    Log.warn("end_frame without an active frame; discarding recorded work (occurrences={})", s_unopenedEndCount + 1);
+  }
+  ++s_unopenedEndCount;
+  gx::drop_pending_frame_interpolation_uniforms();
+  // Copies recorded without a frame never ran (their resolves were dropped) and any native blit
+  // uniforms they staged went to scratch, so do not read them back.
+  efb_ram::cancel();
+  efb_ram::abort_async();
+  g_verts.release();
+  g_uniforms.release();
+  g_indices.release();
+  g_storage.release();
+  g_textureUploads.clear();
+  g_textureUpload.release();
+  recycle_render_passes(g_renderPasses);
+  discard_suspended_efb_pass();
+  g_inOffscreen = false;
+  g_currentRenderPass = UINT32_MAX;
+  for (auto& array : gx::g_gxState.arrays) {
+    array.cachedRange = {};
+  }
+  if (advanceFrame) {
+    ++g_frameIndex;
+  }
+}
+
 static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   ZoneScoped;
+  if (!g_frameOpen.load(std::memory_order_relaxed)) {
+    end_unopened_batch(advanceFrame);
+    return;
+  }
+  g_frameOpen.store(false, std::memory_order_relaxed);
   ASSERT(!advanceFrame || !g_inOffscreen, "end_frame called while offscreen rendering is active");
   if (advanceFrame) {
     gx::finalize_frame_interpolation();
@@ -1299,6 +1381,8 @@ void split_staging_batch() {
 
 uint32_t current_frame() noexcept { return g_frameIndex; }
 
+bool frame_open() noexcept { return g_frameOpen.load(std::memory_order_relaxed); }
+
 // The only place that erases from g_cachedBindGroups, whose handles the frame being encoded still
 // holds, so it runs in the seal prologue with the renderer mutex held and the producer excluded.
 void expire_bind_group_cache() noexcept {
@@ -1353,6 +1437,17 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
       continue;
     }
 
+    if (!passInfo.colorView || !passInfo.depthView) {
+      // A pass recorded before the render targets existed (e.g. a 0x0 canvas at startup):
+      // beginRenderPass would reject the missing attachment view. Drop it rather than the device.
+      static uint32_t s_missingTargetCount = 0;
+      if (s_missingTargetCount < 16 || (s_missingTargetCount & 1023) == 0) {
+        Log.warn("Skipping render pass {} without {} attachment (occurrences={})", i,
+                 !passInfo.colorView ? "a color" : "a depth", s_missingTargetCount + 1);
+      }
+      ++s_missingTargetCount;
+      continue;
+    }
     const std::array attachments{
         wgpu::RenderPassColorAttachment{
             .view = passInfo.colorView,
@@ -1564,9 +1659,16 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
       // "in front" geometry silently vanishes. A full [0,1] viewport is unaffected either way,
       // which is why this only broke specific elements, not the whole scene. Matches upstream
       // aurora's apply_viewport (lib/gfx/encoding.cpp) exactly.
-      const float minDepth = gx::UseReversedZ ? 1.0f - vp.zfar : vp.znear;
-      const float maxDepth = gx::UseReversedZ ? 1.0f - vp.znear : vp.zfar;
-      pass.SetViewport(vp.left, vp.top, vp.width, vp.height, minDepth, maxDepth);
+      //
+      // A range WebGPU cannot take (outside [0, 1] or inverted) gets a [0, 1] viewport instead; every GX
+      // draw under it is built with ShaderConfig::depthRangeFixup and writes the GX depth (with GX's clamp)
+      // from the fragment shader. See viewport_needs_depth_fixup() in gx.hpp.
+      if (gx::viewport_needs_depth_fixup(vp)) {
+        pass.SetViewport(vp.left, vp.top, vp.width, vp.height, 0.0f, 1.0f);
+      } else {
+        const auto range = gx::host_viewport_depth_range(vp);
+        pass.SetViewport(vp.left, vp.top, vp.width, vp.height, range.minDepth, range.maxDepth);
+      }
     } break;
     case CommandType::SetScissor: {
       const auto& sc = cmd.data.setScissor;
@@ -1636,7 +1738,18 @@ bool bind_pipeline(PipelineRef ref, const wgpu::RenderPassEncoder& pass, Pipelin
   return true;
 }
 
+// Outside an open frame the staging ByteBuffers are heap scratch whose contents are never uploaded
+// (every command is dropped by push_command). Reuse one allocation instead of growing without bound
+// for as long as frames keep failing to begin; views handed out earlier stay valid (no realloc
+// unless a single write is larger than any before it).
+static inline void reset_unframed_scratch(ByteBuffer& target) noexcept {
+  if (!g_frameOpen.load(std::memory_order_relaxed)) {
+    target.clear();
+  }
+}
+
 static inline Range push(ByteBuffer& target, const uint8_t* data, size_t length, size_t alignment) {
+  reset_unframed_scratch(target);
   size_t padding = 0;
   if (alignment != 0) {
     const size_t remainder = length % alignment;
@@ -1657,6 +1770,7 @@ static inline Range push(ByteBuffer& target, const uint8_t* data, size_t length,
   return {static_cast<uint32_t>(begin), static_cast<uint32_t>(length + padding)};
 }
 static inline Range map(ByteBuffer& target, size_t length, size_t alignment) {
+  reset_unframed_scratch(target);
   size_t padding = 0;
   if (alignment != 0) {
     const size_t remainder = length % alignment;

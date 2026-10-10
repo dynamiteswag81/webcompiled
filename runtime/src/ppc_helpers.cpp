@@ -5,6 +5,7 @@
 #include "memory.h"
 #include "runtime_log.h"
 #include "timebase_contract.h"
+#include "platform/web_host.h"
 
 #include <array>
 #include <bitset>
@@ -45,7 +46,9 @@ bool g_hasReservation = false;
 const auto g_timeBaseStart = std::chrono::steady_clock::now();
 
 uint64_t GetTimeBase() {
-    const auto elapsed = std::chrono::steady_clock::now() - g_timeBaseStart;
+    // The browser build parks the guest while the page is hidden; that time never happened for it.
+    const auto elapsed = std::chrono::steady_clock::now() - g_timeBaseStart -
+                         std::chrono::nanoseconds(WebHost::ParkedNanos());
     const auto nanoseconds =
         std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
     return TimeBaseContract::NanosecondsToTicks(static_cast<uint64_t>(nanoseconds));

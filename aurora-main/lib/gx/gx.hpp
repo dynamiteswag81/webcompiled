@@ -559,7 +559,10 @@ struct ShaderConfig {
   u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
   u8 dualTexEnabled : 1 = 0;
   u8 fogRangeAdjust : 1 = 0;
-  u8 pad1 : 4 = 0;
+  // The draw's viewport depth range does not fit WebGPU's [0, 1] (see viewport_needs_depth_fixup):
+  // the pass viewport is set to [0, 1] and the fragment shader writes the GX depth itself.
+  u8 depthRangeFixup : 1 = 0;
+  u8 pad1 : 3 = 0;
   u8 numTexGens = 0;
   u32 zTexture = 0; // bias[0:23], format[24:25], op[26:27]; 0 disables shader depth output.
   std::array<AttrConfig, MaxVtxAttr> attrs;
@@ -575,6 +578,58 @@ struct ShaderConfig {
   bool operator==(const ShaderConfig& rhs) const { return memcmp(this, &rhs, sizeof(*this)) == 0; }
 };
 static_assert(std::has_unique_object_representations_v<ShaderConfig>);
+
+// GX viewport depth -> host depth buffer.
+//
+// GX maps clip-space z (-w..0, near..far) to depth = zfar + z_ndc * (zfar - znear) and clamps the result to the
+// 24-bit depth range. effective_projection() (shader_info.cpp) folds the GX z into a host NDC z in [0, 1] (`flip`
+// picks the form) and the render pass viewport normally does the rest: minDepth/maxDepth below, with reversed Z
+// storing 1 - depth. WebGPU requires 0 <= minDepth <= maxDepth <= 1, but games set ranges outside that (Mario Kart
+// Wii: GX znear -0.06, zfar 0.05 -> host 0.95..1.06), which browser WebGPU rejects with a validation error and
+// native Dawn (validation skipped in release) passes to the driver as undefined behaviour.
+//
+// For those draws only, the pass viewport becomes [0, 1] (so the fragment's position.z is exactly the host NDC z,
+// and clipping is still exactly the GX clip volume) and the shader computes the stored depth itself:
+//   stored = clamp(offset + scale * ndc_z, 0, 1)
+// which is the GX transform including its clamp, i.e. what the hardware writes. A vertex-shader-only fold (Dolphin
+// with depth clamp) cannot express the clamp: without depth-clip-control + clip distances the out-of-range part is
+// clipped (the geometry vanishes) instead of clamped. Draws whose range already fits are untouched.
+inline bool viewport_depth_flip(const gfx::Viewport& vp) noexcept { return (vp.znear <= vp.zfar) == UseReversedZ; }
+
+struct HostDepthRange {
+  float minDepth;
+  float maxDepth;
+};
+inline HostDepthRange host_viewport_depth_range(const gfx::Viewport& vp) noexcept {
+  return UseReversedZ ? HostDepthRange{1.0f - vp.zfar, 1.0f - vp.znear} : HostDepthRange{vp.znear, vp.zfar};
+}
+
+// True when the viewport range cannot be given to the host as-is (also true for NaN).
+inline bool viewport_needs_depth_fixup(const gfx::Viewport& vp) noexcept {
+  const auto range = host_viewport_depth_range(vp);
+  return !(range.minDepth >= 0.0f && range.maxDepth <= 1.0f && range.minDepth <= range.maxDepth);
+}
+
+struct HostDepthMapping {
+  float offset;
+  float scale;
+};
+// stored depth = clamp(offset + scale * host_ndc_z, 0, 1), for the projection form viewport_depth_flip() selects.
+// For an in-range, non-inverted viewport this is exactly minDepth + ndc * (maxDepth - minDepth).
+inline HostDepthMapping host_depth_mapping(const gfx::Viewport& vp) noexcept {
+  const float zn = std::isfinite(vp.znear) ? vp.znear : 0.0f;
+  const float zf = std::isfinite(vp.zfar) ? vp.zfar : 1.0f;
+  // GX depth as a function of host ndc: flip -> ndc = -z_gx (gx = zf - ndc * (zf - zn));
+  // no flip -> ndc = z_gx + 1 (gx = zn + ndc * (zf - zn)).
+  const bool flip = viewport_depth_flip(vp); // must match effective_projection() exactly
+  float offset = flip ? zf : zn;
+  float scale = flip ? zn - zf : zf - zn;
+  if (UseReversedZ) {
+    offset = 1.0f - offset;
+    scale = -scale;
+  }
+  return {offset, scale};
+}
 
 // GX supplies an opaque white color when a draw omits vertex colors.
 inline int shader_vertex_color_attr(const ShaderConfig& config, u32 channel) noexcept {

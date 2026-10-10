@@ -2082,13 +2082,17 @@ static const CachedPipelineState& resolve_pipeline_state(GXPrimitive prim, GXVtx
     u32 sampleCount = 0;
     GXPrimitive prim = static_cast<GXPrimitive>(0);
     GXVtxFmt fmt = static_cast<GXVtxFmt>(0);
+    bool depthRangeFixup = false;
   };
   static Memo memo{};
 
   const u32 sampleCount = gfx::get_sample_count();
   const u32 generation = g_gxState.pipelineStateGeneration;
+  // Viewport changes do not advance the generation, but whether the viewport's depth range needs
+  // the shader-side fixup selects a different pipeline (ShaderConfig::depthRangeFixup).
+  const bool depthRangeFixup = viewport_needs_depth_fixup(g_gxState.renderViewport);
   if (memo.state != nullptr && memo.generation == generation && memo.sampleCount == sampleCount &&
-      memo.prim == prim && memo.fmt == fmt) LIKELY {
+      memo.prim == prim && memo.fmt == fmt && memo.depthRangeFixup == depthRangeFixup) LIKELY {
     return *memo.state;
   }
 
@@ -2102,6 +2106,7 @@ static const CachedPipelineState& resolve_pipeline_state(GXPrimitive prim, GXVtx
       .sampleCount = sampleCount,
       .prim = prim,
       .fmt = fmt,
+      .depthRangeFixup = depthRangeFixup,
   };
   return state;
 }

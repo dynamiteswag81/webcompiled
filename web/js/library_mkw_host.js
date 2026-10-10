@@ -69,6 +69,34 @@ addToLibrary({
     else MkwHost.postYield(resolve);
   }),
 
+  // Page visibility. The runtime parks the whole guest (WebHost::WaitWhilePageHidden) while the
+  // page is hidden: a background tab otherwise keeps simulating with no frames to show, burns a
+  // core and overflows the audio queue. Module.mkwPaused / mkwParkCount expose the state.
+  mkw_host_page_hidden: () =>
+    (typeof document !== 'undefined' && document.visibilityState === 'hidden') ? 1 : 0,
+
+  mkw_host_wait_visible__async: true,
+  mkw_host_wait_visible: () => new Promise((resolve) => {
+    if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+      resolve();
+      return;
+    }
+    Module['mkwPaused'] = true;
+    Module['mkwParkCount'] = (Module['mkwParkCount'] || 0) + 1;
+    const onChange = () => {
+      if (document.visibilityState === 'hidden') return;
+      document.removeEventListener('visibilitychange', onChange);
+      Module['mkwPaused'] = false;
+      resolve();
+    };
+    document.addEventListener('visibilitychange', onChange);
+  }),
+
+  // One call per presented frame (Module.mkwFramesPresented).
+  mkw_host_note_frame: () => {
+    Module['mkwFramesPresented'] = (Module['mkwFramesPresented'] || 0) + 1;
+  },
+
   // The runtime's fatal report (ShowRuntimeFatalPopup), for the page's error overlay. Not a
   // suspending import: the runtime continues into its own exit path right after.
   mkw_host_report_fatal__deps: ['$UTF8ToString'],

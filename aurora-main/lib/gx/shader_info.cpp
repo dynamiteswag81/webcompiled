@@ -560,7 +560,7 @@ constexpr size_t kStagedUniformBytes =
 // exactly one always applies, never both, and never neither.
 static Mat4x4<float> effective_projection() noexcept {
   const auto& vp = g_gxState.renderViewport;
-  const bool flip = (vp.znear <= vp.zfar) == UseReversedZ;
+  const bool flip = viewport_depth_flip(vp);
   Mat4x4<float> proj = g_gxState.proj;
   for (size_t i = 0; i < 4; ++i) {
     proj.m2.m[i] = flip ? -proj.m2.m[i] : (proj.m2.m[i] + proj.m3.m[i]);
@@ -598,8 +598,15 @@ UniformRanges build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGrou
   stage_f32(g_gxState.renderViewport.height);
   stage_f32(g_gxState.logicalViewport.width);
   stage_f32(g_gxState.logicalViewport.height);
-  std::memset(staged.data() + stagedSize, 0, 8); // pad
-  stagedSize += 8;
+  // `pad` (vec2u in WGSL) carries the host depth mapping for depth-range-fixup shaders; zero otherwise.
+  if (viewport_needs_depth_fixup(g_gxState.renderViewport)) {
+    const auto mapping = host_depth_mapping(g_gxState.renderViewport);
+    stage_f32(mapping.offset);
+    stage_f32(mapping.scale);
+  } else {
+    std::memset(staged.data() + stagedSize, 0, 8); // pad
+    stagedSize += 8;
+  }
   for (const auto& vaRange : ranges.vaRanges) {
     stage_u32(vaRange.offset);
   }

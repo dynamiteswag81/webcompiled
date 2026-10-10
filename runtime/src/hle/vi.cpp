@@ -8,6 +8,7 @@
 #include "fiber_manager.h"
 #include "platform/host_platform.h"
 #include "runtime_log.h"
+#include "audio_backend.h"
 
 #include <dolphin/vi.h>
 
@@ -263,6 +264,33 @@ uint32_t ExtractTvFormat(uint32_t tvMode) {
     return (tvMode >> 2) & 0x7;
 }
 
+// Browser build: while the page is hidden, park the whole guest here (WebHost::WaitWhilePageHidden
+// suspends the only stack until the page is visible again) instead of simulating a console nobody
+// can see. Called at frame and retrace boundaries. Audio output pauses with it, and the VI retrace
+// grid moves forward by the parked time so no retraces are "caught up" on resume. Returns the
+// parked time (zero when visible, always zero natively).
+Clock::duration ParkWhilePageHidden() {
+#if defined(__EMSCRIPTEN__)
+    if (!WebHost::PageHidden()) {
+        return {};
+    }
+    RT_LOG(RT_TAG_VI) << "page hidden: pausing the game until it is visible again" << std::endl;
+    AudioBackend::Instance().SetOutputPaused(true);
+    const auto parked = std::chrono::duration_cast<Clock::duration>(WebHost::WaitWhilePageHidden());
+    AudioBackend::Instance().SetOutputPaused(false);
+    {
+        std::lock_guard<std::mutex> lock(g_viMutex);
+        g_vi.lastRetrace += parked;
+    }
+    RT_LOG(RT_TAG_VI) << "page visible: resumed after "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(parked).count() << " ms"
+                      << std::endl;
+    return parked;
+#else
+    return {};
+#endif
+}
+
 // Re-entry guard to prevent AdvanceRetrace calling itself via OSWakeupThread -> SelectThread
 static std::atomic<bool> s_inAdvanceRetrace{false};
 
@@ -389,6 +417,12 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
 bool AdvanceDueRetraces(CpuContext* ctx, int maxToProcess, bool serviceAurora)
 {
     bool advancedAny = false;
+    // Retrace boundaries keep coming while the game is loading or otherwise not presenting, so this
+    // is the fallback park point (frame presents park in VI_HLE_PresentFrame). Only on the paths that
+    // own Aurora: the deferred path runs inside a native GX call.
+    if (serviceAurora) {
+        (void)ParkWhilePageHidden();
+    }
 
     for (int catchUpCount = 0; catchUpCount < maxToProcess; ++catchUpCount) {
         Clock::time_point target;
@@ -586,10 +620,27 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         aurora_set_present_schedule(0, 0);
     }
 
-    aurora_end_frame();
+    // A frame is only sealed if one was begun. Begin can fail (window hidden or minimized, surface
+    // being recreated, render targets not created yet); every GX command since was dropped, and
+    // ending the never-begun frame used to unmap and rotate a staging buffer this frame never
+    // mapped. Skip the seal and keep the pacing.
+    if (g_auroraFrameActive.load(std::memory_order_acquire)) {
+        aurora_end_frame();
+        WebHost::NoteFramePresented();
+    } else {
+        static uint32_t s_skippedPresentCount = 0;
+        if (s_skippedPresentCount < 16 || (s_skippedPresentCount & 1023) == 0) {
+            RT_LOGF(RT_TAG_VI, "present skipped: no active Aurora frame (n=%u)\n", s_skippedPresentCount + 1);
+        }
+        ++s_skippedPresentCount;
+    }
     // Browser build: give the page a turn every frame so the canvas presents and input arrives
     // even when the frame ran late and pacing below has nothing left to wait for. No-op natively.
     WebHost::Yield();
+    // Browser build: a hidden page parks here, between frames, until it is visible again.
+    if (const auto parked = ParkWhilePageHidden(); parked != Clock::duration::zero()) {
+        paceDeadline += parked;
+    }
     if (paceThisFrame) {
         PaceToRetraceBoundary(paceDeadline);
         std::lock_guard<std::mutex> lock(g_viMutex);

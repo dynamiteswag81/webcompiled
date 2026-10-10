@@ -37,6 +37,7 @@ extern "C" void Android_UnlockActivityMutex(void);
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <vector>
 
@@ -604,7 +605,22 @@ AuroraWindowSize get_window_size() {
     fb_h = scaledH;
   }
 
-  const float scale = SDL_GetWindowDisplayScale(g_window);
+  float scale = SDL_GetWindowDisplayScale(g_window);
+  // SDL derives the scale from pixel size / window size, which is 0/0 for a zero-sized window
+  // (a hidden or display:none canvas on the web).
+  if (!std::isfinite(scale) || scale <= 0.f) {
+    scale = 1.f;
+  }
+#ifdef __EMSCRIPTEN__
+  // A canvas can be 0x0 (hidden page, display: none). Nothing downstream handles a zero-sized
+  // surface or render target, and the runtime parks the guest while the page is hidden anyway.
+  width = std::max(width, 1);
+  height = std::max(height, 1);
+  native_fb_w = std::max(native_fb_w, 1);
+  native_fb_h = std::max(native_fb_h, 1);
+  fb_w = std::max(fb_w, 1);
+  fb_h = std::max(fb_h, 1);
+#endif
   return {
       .width = static_cast<uint32_t>(width),
       .height = static_cast<uint32_t>(height),
@@ -624,6 +640,13 @@ bool is_paused() noexcept {
   if (!is_presentable()) {
     return true;
   }
+#ifdef __EMSCRIPTEN__
+  // SDL marks the canvas window hidden/minimized/unfocused with the page's visibility and focus.
+  // A paused window makes begin_frame fail, and the guest keeps running with every GX command
+  // dropped. The web runtime instead parks the whole guest while the page is hidden
+  // (WebHost::WaitWhilePageHidden), so rendering never needs to stop here.
+  return false;
+#endif
   const auto flags = SDL_GetWindowFlags(g_window);
   if ((flags & SDL_WINDOW_HIDDEN) != 0u) {
     return true;
@@ -651,8 +674,18 @@ void pump_events() noexcept {
 bool native_resize_pending() noexcept { return g_nativeResizePending.load(std::memory_order_acquire); }
 
 bool native_window_size_matches(uint32_t width, uint32_t height) noexcept {
-  if (g_window == nullptr || width == 0 || height == 0) {
+  if (g_window == nullptr) {
     return true;
+  }
+  if (width == 0 || height == 0) {
+    // The surface was configured while the window had no size (it never got render targets):
+    // it only "matches" while the window is still empty, so the first real size triggers a resize.
+    int nativeWidth = 0;
+    int nativeHeight = 0;
+    if (!SDL_GetWindowSizeInPixels(g_window, &nativeWidth, &nativeHeight)) {
+      return true;
+    }
+    return nativeWidth <= 0 || nativeHeight <= 0;
   }
   uint32_t nativeWidth = 0;
   uint32_t nativeHeight = 0;

@@ -7,15 +7,28 @@
 // Callers must be on a JSPI-suspendable stack: main() or a guest host context,
 // never a JS callback.
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 
 #if defined(__EMSCRIPTEN__)
 extern "C" void mkw_host_yield(int ms);
+extern "C" int mkw_host_page_hidden(void);
+extern "C" void mkw_host_wait_visible(void);
+extern "C" void mkw_host_note_frame(void);
 #else
 #include <thread>
 #endif
 
 namespace WebHost {
+
+// Total host time the guest spent parked while the page was hidden. Guest-visible clocks subtract
+// it so a background tab looks like a paused console, not a time jump. Always 0 natively.
+inline std::atomic<int64_t>& ParkedNanosCounter() {
+    static std::atomic<int64_t> parked{0};
+    return parked;
+}
+inline int64_t ParkedNanos() { return ParkedNanosCounter().load(std::memory_order_relaxed); }
 
 #if defined(__EMSCRIPTEN__)
 // A single macrotask hop: the browser renders, delivers input and settles
@@ -38,8 +51,32 @@ inline void SleepUntil(std::chrono::time_point<Clock, Duration> deadline) {
         }
     }
 }
+// True while document.visibilityState is "hidden" (background tab, minimized window).
+inline bool PageHidden() { return mkw_host_page_hidden() != 0; }
+
+// If the page is hidden, suspends this stack (JSPI) until it is visible again and returns how long
+// that took; returns zero at once otherwise. Nothing else in the module runs meanwhile: every guest
+// thread is a context on this one stack, so the whole console is paused. The caller must restart
+// whatever it paces against the host clock (VI retraces, audio output).
+inline std::chrono::steady_clock::duration WaitWhilePageHidden() {
+    if (!PageHidden()) {
+        return {};
+    }
+    const auto start = std::chrono::steady_clock::now();
+    mkw_host_wait_visible();
+    const auto parked = std::chrono::steady_clock::now() - start;
+    ParkedNanosCounter().fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(parked).count(), std::memory_order_relaxed);
+    return parked;
+}
+
+// Counts a presented frame for the page (Module.mkwFramesPresented: diagnostics and tests).
+inline void NoteFramePresented() { mkw_host_note_frame(); }
 #else
 inline void Yield() {}
+inline bool PageHidden() { return false; }
+inline std::chrono::steady_clock::duration WaitWhilePageHidden() { return {}; }
+inline void NoteFramePresented() {}
 
 template <typename Clock, typename Duration>
 inline void SleepUntil(std::chrono::time_point<Clock, Duration> deadline) {

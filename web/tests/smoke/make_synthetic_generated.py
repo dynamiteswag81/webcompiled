@@ -10,10 +10,14 @@ dispatch TUs, data_sections_init.cpp + #embed blob companion, guest_symbol_table
 RuntimeConfig.h) without any game data.
 
 The synthetic DOL contains nothing from any game. Its only code is a stand-in for the
-product entry point (0x800060A4, system_bridge.h kDefaultEntryAddress) that does what the
-real boot path does before it first needs the disc: it calls DVDInit (0x8015EA1C), which the
-runtime overrides natively and which resolves the DVD root. With no disc configured, that is
-where startup stops with the runtime's own "DVD data is unavailable" fatal report.
+product entry point (0x800060A4, system_bridge.h kDefaultEntryAddress). With --frames N (the
+default is 600) it first runs a frame loop through the runtime's own GX/VI HLE: GXInit
+(0x8016B850) once, then N x GXCopyDisp (0x8016FC38), each of which seals, presents and paces
+one Aurora frame to the VI retrace grid exactly like the game's frame boundary (the smoke test
+hides and shows the page during this loop). Then it does what the real boot path does before
+it first needs the disc: it calls DVDInit (0x8015EA1C), which the runtime overrides natively and
+which resolves the DVD root. With no disc configured, that is where startup stops with the
+runtime's own "DVD data is unavailable" fatal report.
 
 The runtime also calls a few translated originals directly by symbol (`extern "C" void
 func_XXXXXXXX(CpuContext*)`, e.g. the guest bodies behind REGISTER_NATIVE_FUNCTION_AS wrappers).
@@ -37,6 +41,11 @@ from pathlib import Path
 
 ENTRY = 0x800060A4      # runtime/include/system_bridge.h kDefaultEntryAddress
 DVD_INIT = 0x8015EA1C   # runtime/src/hle/storage/dvd.cpp PPC_NATIVE_OVERRIDE_VOID(8015EA1C, DVDInit...)
+GX_INIT = 0x8016B850    # runtime/src/hle/gx/gx_init.cpp GX__Init_8016b850(fifoBase, fifoSize)
+GX_COPY_DISP = 0x8016FC38  # runtime/src/hle/gx/gx_copy.cpp GX__CopyDisp_8016fc38(xfb, clear)
+FIFO_BASE = 0x80400000  # 256 KiB GX FIFO for the frame loop (free MEM1; nothing else lives there)
+FIFO_SIZE = 0x00040000
+XFB_ADDR = 0x80500000   # "external framebuffer" address handed to GXCopyDisp (never read back)
 DATA_ADDR = 0x80300000
 SDA_BASE = 0x8038CC00
 SDA2_BASE = 0x8038EFA0
@@ -46,20 +55,57 @@ def bl(pc: int, target: int) -> int:
     return 0x48000001 | ((target - pc) & 0x03FFFFFC)
 
 
-def entry_code() -> list[int]:
-    words = [
-        0x9421FFF0,  # stwu  r1,-16(r1)
+def entry_code(frames: int) -> list[int]:
+    if not 0 <= frames <= 0x7FFF:
+        raise SystemExit("--frames must be 0..32767")
+    words: list[object] = [
+        0x9421FFE0,  # stwu  r1,-32(r1)
         0x7C0802A6,  # mflr  r0
-        0x90010014,  # stw   r0,20(r1)
-        None,        # bl    DVDInit
-        0x80010014,  # lwz   r0,20(r1)
+        0x90010024,  # stw   r0,36(r1)
+        0x93E1001C,  # stw   r31,28(r1)
+    ]
+    if frames:
+        words += [
+            0x3C600000 | (FIFO_BASE >> 16),   # lis   r3,FIFO_BASE@h
+            0x3C800000 | (FIFO_SIZE >> 16),   # lis   r4,FIFO_SIZE@h
+            ("bl", GX_INIT),
+            0x3BE00000 | frames,              # li    r31,frames
+            "loop",
+            0x3C600000 | (XFB_ADDR >> 16),    # lis   r3,XFB_ADDR@h
+            0x38800001,                       # li    r4,1 (clear)
+            ("bl", GX_COPY_DISP),
+            0x37FFFFFF,                       # addic. r31,r31,-1
+            ("bne", "loop"),
+        ]
+    words += [
+        ("bl", DVD_INIT),
+        0x83E1001C,  # lwz   r31,28(r1)
+        0x80010024,  # lwz   r0,36(r1)
         0x7C0803A6,  # mtlr  r0
-        0x38210010,  # addi  r1,r1,16
+        0x38210020,  # addi  r1,r1,32
         0x38600000,  # li    r3,0
         0x4E800020,  # blr
     ]
-    words[3] = bl(ENTRY + 3 * 4, DVD_INIT)
-    return words
+    labels: dict[str, int] = {}
+    pc = ENTRY
+    for word in words:
+        if isinstance(word, str):
+            labels[word] = pc
+        else:
+            pc += 4
+    out: list[int] = []
+    pc = ENTRY
+    for word in words:
+        if isinstance(word, str):
+            continue
+        if isinstance(word, tuple) and word[0] == "bl":
+            out.append(bl(pc, word[1]))
+        elif isinstance(word, tuple) and word[0] == "bne":
+            out.append(0x40820000 | ((labels[word[1]] - pc) & 0xFFFC))  # bne cr0,label
+        else:
+            out.append(word)
+        pc += 4
+    return out
 
 
 BLR = 0x4E800020
@@ -95,14 +141,15 @@ def text_sections(functions: dict[int, bytes], slots: int = 7) -> list[tuple[int
     return sections
 
 
-def make_dol(extra_functions: list[int]) -> bytes:
+def make_dol(extra_functions: list[int], frames: int) -> bytes:
     """DOL layout: 0x100-byte header, then section payloads (see translator SyntheticDolFactory)."""
     words = lambda ws: b"".join(struct.pack(">I", w) for w in ws)
     functions = {addr: words([BLR]) for addr in extra_functions}
-    functions[ENTRY] = words(entry_code())
-    # Body for the natively overridden DVDInit: the translator never lifts it, but the target of
-    # the direct call must lie inside a text section.
-    functions[DVD_INIT] = words([BLR])
+    functions[ENTRY] = words(entry_code(frames))
+    # Bodies for the natively overridden callees: the translator never lifts them, but the target
+    # of a direct call must lie inside a text section.
+    for native in (DVD_INIT, GX_INIT, GX_COPY_DISP):
+        functions[native] = words([BLR])
     text = text_sections(functions)
     if len(text) > 7:
         raise SystemExit("synthetic DOL needs more than 7 text sections")
@@ -178,6 +225,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("--workspace", type=Path, default=repo)
+    parser.add_argument("--frames", type=int, default=600,
+                        help="GXCopyDisp frames the entry point presents before DVDInit (0: none)")
     parser.add_argument("--translator", type=Path,
                         default=repo / "translator/src/Translator.Cli/bin/Release/net8.0/Translator.Cli.dll")
     args = parser.parse_args()
@@ -197,9 +246,11 @@ def main() -> int:
     for sub in ("generated", "base", "input"):
         shutil.rmtree(out / sub, ignore_errors=True)
     (out / "input").mkdir(parents=True)
-    extra = [addr for addr in runtime_referenced_functions(workspace) if addr not in (ENTRY, DVD_INIT)]
+    extra = [addr for addr in runtime_referenced_functions(workspace)
+             if addr not in (ENTRY, DVD_INIT, GX_INIT, GX_COPY_DISP)]
     print("runtime-referenced translated functions: " + ", ".join(f"func_{a:08X}" for a in extra))
-    (out / "input" / "main.dol").write_bytes(make_dol(extra))
+    print(f"entry point frame loop: {args.frames} GXCopyDisp frame(s) before DVDInit")
+    (out / "input" / "main.dol").write_bytes(make_dol(extra, args.frames))
     (out / "input" / "MAP.txt").write_text(
         f"{ENTRY:08x} smoke_entry\n" + "".join(f"{a:08x} runtime_ref_{a:08x}\n" for a in extra))
     project = out / "input" / "recomp.yml"

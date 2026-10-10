@@ -285,6 +285,9 @@ void abort_frame() noexcept;
 void end_frame(const wgpu::CommandEncoder& cmd);
 void end_batch(const wgpu::CommandEncoder& cmd);
 uint32_t current_frame() noexcept;
+// A frame is open between a successful begin_frame()/resume_frame() and the end_frame()/abort_frame()
+// that closes it. GX work recorded outside a frame is dropped.
+bool frame_open() noexcept;
 
 // One frame's recorded render passes, detached from the guest-visible
 // recording state. The contents are private to common.cpp.

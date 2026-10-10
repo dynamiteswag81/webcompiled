@@ -23,6 +23,10 @@ public:
     void SetMasterVolume(float volume);
     void SetMuted(bool muted);
 
+    // Stops/restarts the host output device without dropping the stream (the web build pauses
+    // while the page is hidden and the guest is parked, so nothing is produced meanwhile).
+    void SetOutputPaused(bool paused);
+
 private:
     AudioBackend() = default;
     ~AudioBackend() = default;
@@ -43,6 +47,7 @@ private:
     bool m_initialized = false;
     float m_masterVolume = 1.0f;
     bool m_muted = false;
+    bool m_outputPaused = false;
     bool m_reportedDroppedBlock = false;
     std::vector<int16_t> m_convertBuffer;
 };
