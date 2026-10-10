@@ -132,87 +132,133 @@ Consequences:
 ## Ownership
 
 The cloud session owns all remaining work (it has no game data, so it cannot
-run the translator or link the final product, but it can build and test
-everything else). The local session (with the user's dump) is recalled later
-only to run the full pipeline end to end and debug against the real game.
+run the translator on the disc or link the final product, but it builds and
+tests everything else). The local session (with the user's dump) is recalled
+later only to run the full pipeline end to end and debug against the real game.
 
-## Status (handover from the local session)
+## Status
 
-Verified locally with the real dump (outputs are gitignored, not in the repo):
-* Translator on the clean PAL dump: 29,637 functions in ~30 s;
-  `emit-base-manifest`, `generate-data-init`, `emit-build-shards` all succeed
+Last updated by the cloud session. "Verified" means run here, without game data,
+unless it says "local" (verified by the local session with the real dump).
+
+### Verified
+* **Translator on the clean PAL dump (local):** 29,637 functions in ~30 s;
+  `emit-base-manifest`, `generate-data-init`, `emit-build-shards` succeed
   → 72 `base_common` shards + dispatch + 16 registration TUs (~427 MB C++).
-* One translated shard compiles with em++ 6.0.12 in ~14 s (1.8 MB object) using:
-  `-std=c++17 -O2 -fno-fast-math -ffp-contract=off -fno-slp-vectorize -w
-  -fwasm-exceptions -msimd128 -msse4.2 -mavx2 -DTARGET_PC
-  -Iruntime/include -Iruntime/src -I<repo root> -Iaurora-main/include`.
-* **JSPI HostContext backend works**: `web/tests/host_context_test.cpp`
-  (3 contexts ping-ponging, separate shadow stacks, 2000-deep recursion, C++
-  exceptions, `mkw_host_yield`) prints `PASS` under Node 24. Build:
-  `em++ -std=c++20 -O2 -fwasm-exceptions -sJSPI
+* **One translated shard compiles with em++ (local)** in ~14 s (1.8 MB object)
+  with the same flags the web product graph now uses for shards
+  (`-O2 -fno-fast-math -ffp-contract=off -fno-slp-vectorize -fwasm-exceptions
+  -sSUPPORT_LONGJMP=wasm -msimd128 -msse4.2 -mavx2 -DTARGET_PC`).
+* **JSPI HostContext backend:** `web/tests/host_context_test.cpp` prints `PASS`
+  under Node 24 (local). Build: `em++ -std=c++20 -O2 -fwasm-exceptions -sJSPI
   -sJSPI_EXPORTS=main,mkw_host_context_entry --js-library
   web/js/library_mkw_host.js -Iruntime/include web/tests/host_context_test.cpp
   runtime/src/host_context.cpp -o test.js && node test.js`.
+* **aurora in the browser:** `aurora-main/examples/simple` (built with emcmake,
+  see "aurora web notes") renders its GX clear colour through browser WebGPU in
+  headless Chromium 141 (SwiftShader adapter), single-threaded, under JSPI.
+* **Runtime compiles for wasm:** every `runtime/src` TU except `abi_bridge.cpp`
+  and `hle/os/os_alarm.cpp` (they include translator output) compiles with
+  em++ 6.0.12 via the `mkw_web_runtime_compile` audit target:
+  `emcmake cmake -S runtime -B build-rt -G Ninja -DCMAKE_BUILD_TYPE=Release
+  -DMKW_BUILD_PRODUCTS=OFF && ninja -C build-rt mkw_web_runtime_compile`.
+  Edited files still compile natively (clang++ `-fsyntax-only`, x86-64-v3).
+* **Web product graph configures** with a stub shard manifest and produces the
+  intended link line (JSPI, js libraries, IDBFS, embedded `/app` assets); the
+  shard compile flags match the line above.
+* **Translator `#embed` companions:** `dotnet test` 645/645; the emitted
+  `data_sections_init_blobs.cpp` compiles with em++ and its bytes read back
+  equal to the `.bin` files under Node.
+* **Site tooling:** `web/serve.py` (Range/416/HEAD/MIME) passes
+  `python3 -m unittest discover -s web/tests -p 'test_*.py'` (18 tests);
+  the page passes `node web/tests/frontend_test.mjs` (Playwright, headless
+  Chromium: compat check, download progress, start gate, help, error overlay,
+  phone width).
 
-Done in this branch:
-* `ppc_isa_config.h`: wasm reuses the x86 SIMD formulations via Emscripten's
-  SSE/AVX2 compat headers (`MKW_HOST_X86_SIMD`); **no `-mfma`** on purpose
-  (Emscripten's `_mm_fmadd_ps` would be an unfused mul+add; without `__FMA__`
-  the code takes its correctly-rounded scalar `fmaf` path).
-* `ppc_isa_fpenv.h`: software FP-control word on wasm (no FTZ/DAZ hardware;
-  explicit NI flush points still honored).
-* `guest_flat_memory.h` / `memory_access.h` / `ppc_isa_quantized.h`: no flat
-  base on wasm; `RequiresCheckedAccess()` is constexpr true; `ResolveRangeHost`
-  and the psq fast paths resolve through the 1 MiB page-bias tables;
-  `FlatWriteRam*` use the writable-bias fast path.
-* `host_context.cpp`: `__EMSCRIPTEN__` JSPI backend + `web/js/library_mkw_host.js`
-  (`mkw_host_context_switch`, `mkw_host_yield`).
+### Done (code in this branch)
+* ISA/FP/memory headers for wasm (`MKW_HOST_X86_SIMD`, no `-mfma`, software FP
+  control word, page-table guest memory); `guest_flat_memory_wasm.cpp`.
+* JSPI `HostContext` + `web/js/library_mkw_host.js` (`mkw_host_context_switch`,
+  `mkw_host_yield`).
+* aurora for Emscripten (see "aurora web notes").
+* Runtime: `MKW_PLATFORM_WEB` CMake path; networking always off (no TLS, no
+  sockets); Discord presence and TLS replaced by `src/platform/web/` stubs; AX
+  mixing inline; no transcript threads; graphics API table `{"auto"}`; sleeps
+  in VI pacing, GX frame retry and `GKI_delay` suspend through
+  `platform/web_host.h` (`WebHost::SleepUntil/SleepFor/Yield`), plus one yield
+  after every `aurora_end_frame()`; executable directory `/app` (embedded
+  `dsp_coef.bin`, `wii_bootstrap/`), app data under `$HOME`
+  (`/home/web_user`).
+* Product link (`runtime/cmake/PublicProducts.cmake`, `mkw_configure_web_product`):
+  `-sJSPI -sJSPI_EXPORTS=main,mkw_host_context_entry`, every `web/js/*.js` as
+  `--js-library`, `-lidbfs.js`, `-sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=4GB
+  -sSTACK_SIZE=8MB -sENVIRONMENT=web`, `--embed-file` for `/app`;
+  `-DMKW_PLATFORM_WEB_DIST=<dir>` copies `WiiCompiled.js/.wasm` there.
+  Translated `.S` blobs are replaced by the translator's `#embed` companions
+  (`data_sections_init_blobs.cpp`, `mod_data_patches_blobs.cpp`); never both.
+* `web/build.sh`, `web/build.ps1`, `web/serve.py`, `web/site/` (see the spec).
 
-Known remaining compile errors from `em++ -fsyntax-only` over `runtime/src`:
-* SDL3 headers (`SDL3/SDL_events.h`, `SDL_gamepad.h`, `SDL_audio.h`): come with
-  aurora's SDL3 once aurora builds for Emscripten (or `--use-port=sdl3` meanwhile).
-* `runtime_config.h` `IsSupportedGraphicsApi`: no `values` table for
-  Emscripten (it defines neither `__linux__` nor `_WIN32`); add `{"auto"}`.
-  Same check for main.cpp's `kGraphicsBackends`.
-* `discord_presence.cpp` (`timeval`), `network_ssl.cpp` (mbedtls),
-  `music_attenuation.cpp`: compile out on the web.
-* `guest_flat_memory.cpp`: exclude; add `guest_flat_memory_wasm.cpp`
-  (malloc-backed stores, modelled on `guest_flat_memory_macos.cpp`).
-* `generated/data_sections_init_blobs.S` is GNU-as asm with `.incbin`, which
-  wasm cannot assemble. The translator also emits the C++ companion
-  `generated/data_sections_init_blobs.cpp` (same `kData_*` symbols, 16-byte
-  aligned, `#embed` of the same `*_blobs/*.bin` files). On the web build compile
-  that `.cpp` INSTEAD of the `.S`; never both. The same applies to
-  `mod_data_patches_blobs.cpp` next to `mod_data_patches_blobs.S` (Retro Rewind).
+### In progress
+* DVD over HTTP Range + disc manifest + IDBFS persistence
+  (`web/js/library_mkw_dvd.js`, `web/tools/make_disc_manifest.py`).
+* Game-data-free smoke test: link the real runtime + aurora against a synthetic
+  translator output tree and boot it in headless Chromium up to the point the
+  disc is required.
 
-Notes for the remaining runtime work:
-* Paths: under Emscripten the generic POSIX branches apply (`$HOME` =
-  `/home/web_user`); mount IDBFS there for config/NAND persistence.
-* Sleeps: `SleepPreciselyUntil`/`PaceToRetraceBoundary` (hle/vi.cpp),
-  `sleep_for` in gx_frame.cpp/os_init.cpp/os_reset.cpp must call
-  `mkw_host_yield` (libc `nanosleep` busy-waits on the main thread). Force a
-  yield after every `aurora_end_frame()` so the canvas presents.
-* DVD: all reads go through `DvdReadContract::ReadExact` (hle/dvd_contract.h)
-  plus `fs::` scans in dvd.cpp → web backend over the manifest + Range fetch.
-* Host threads to make inline/off: AX mix worker (ax_mix.cpp), network
-  deferred worker, main.cpp transcript pipes/threads, music attenuation.
-* Watch V8 limits: per-function body size/locals in huge translated
-  functions, and JSPI secondary-stack depth for deep guest call chains.
+### Needs the real game (local session)
+* Full pipeline end to end: `web/build.sh <image>` (or `build.ps1`, which has
+  not been parsed by PowerShell yet), then play from `web/serve.py`.
+* V8 limits on the largest translated functions (function body size, locals),
+  JSPI secondary-stack depth for deep guest call chains, and link time/size of
+  the 427 MB shard set.
+* Gameplay: rendering correctness on browser WebGPU, audio, input (keyboard map
+  is a placeholder in the help overlay), save persistence across reloads,
+  pacing at 60 Hz with browser timers.
+
+## aurora web notes
+
+Build: `emcmake cmake -S aurora-main -B build-web -G Ninja
+-DCMAKE_BUILD_TYPE=Release && ninja -C build-web simple`, then serve
+`build-web/examples/` over http://127.0.0.1 and open `simple.html`
+(Chrome/Edge 137+; WebGPU needs a secure context).
+
+* CMake (`EMSCRIPTEN`): `dawn::webgpu_dawn` is an interface target over
+  `--use-port=emdawnwebgpu`; all deps static; `-fwasm-exceptions
+  -sSUPPORT_LONGJMP=wasm` for every target; zstd without threads; fmt gets
+  `<cstdlib>`; aurora's tests are not built.
+* imgui's WebGPU backend is built through `lib/imgui_impl_wgpu_web.cpp` (its
+  Dawn path against emdawnwebgpu; v1.91.9 only knows the removed legacy
+  Emscripten bindings).
+* `gpu.cpp`: no Dawn-native instance descriptor, toggles, blob cache, logging
+  callback, ImplicitDeviceSynchronization or MetalFX features; adapter request
+  without a backend type; canvas offers only Fifo. Adapter/device/map waits use
+  `WaitAny` (TimedWaitAny) and suspend through JSPI.
+* Surface from SDL's canvas selector (`SDL_PROP_WINDOW_EMSCRIPTEN_CANVAS_ID_STRING`,
+  default `#canvas`); `SDL_WINDOW_HIGH_PIXEL_DENSITY` gives CSS size ×
+  devicePixelRatio.
+* Single-threaded: no frame worker, presenter, pipeline workers, sqlite
+  pipeline cache or frame interpolation (forced off). Pipelines compile
+  synchronously on first use.
+* Presentation: no `Surface::Present()` (the browser presents when control
+  returns), and no spin to the present deadline (the caller paces).
+* `begin_frame` suspends on the staging-buffer map future via `WaitAny`
+  instead of spinning `ProcessEvents()` (the map resolves on the JS event loop).
+* The example yields with `requestAnimationFrame` through `EM_ASYNC_JS`; the
+  game yields from its VI pacing instead.
+* Gaps: no pipeline cache across reloads (the browser's own shader cache
+  helps); no MSAA/upscaler tuning for the web; Dawn validation messages are not
+  forwarded (no logging callback in emdawnwebgpu).
 
 ## Work plan
 
-1. [ ] `web/` CMake toolchain wrapper + `web/build.ps1` / `build.sh`
-       (extract → translate → emcmake configure → ninja → dist).
-2. [ ] aurora: Emscripten build (SDL3 vendored, emdawnwebgpu, threads off).
-       Validate with aurora's own example (no game data needed).
-3. [ ] runtime: wasm guest memory backend.
-4. [ ] runtime: JSPI `HostContext` backend + JS library.
-5. [ ] runtime: single-threaded audio mixing, networking off, platform stubs
-       (`host_platform.cpp`, crash handling, config paths → MEMFS/IDBFS).
-6. [ ] runtime: x86/SSE-specific code paths (FPU NI mode via MXCSR, `x86-64-v3`
-       intrinsics) → portable scalar/wasm-simd128.
-7. [ ] DVD over HTTP Range + IDBFS NAND.
-8. [ ] Link translated shards (watch V8 per-function size/locals limits;
-       split oversized functions if needed).
-9. [ ] Frontend page: canvas, loading/progress, controls help, error overlay.
-10. [ ] Performance pass (`-O3`, `-msimd128`, LTO decisions, code size).
+1. [x] `web/build.sh` / `web/build.ps1` (extract → translate → emcmake → dist).
+2. [x] aurora: Emscripten build, validated with its own example.
+3. [x] runtime: wasm guest memory backend.
+4. [x] runtime: JSPI `HostContext` backend + JS library.
+5. [x] runtime: single-threaded audio mixing, networking off, platform stubs,
+       app paths (`/app`, `$HOME`).
+6. [x] runtime: x86/SSE paths → Emscripten SSE/AVX2 compat, software FP env.
+7. [ ] DVD over HTTP Range + IDBFS NAND (in progress).
+8. [ ] Link translated shards (needs the real game; watch V8 limits).
+9. [x] Frontend page: canvas, loading/progress, controls help, error overlay.
+10. [ ] Performance pass (`-O3`, LTO decisions, code size).
