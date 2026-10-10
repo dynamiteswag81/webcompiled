@@ -84,9 +84,10 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
         return std::filesystem::path(user->pw_dir) / "Library" / "Application Support" / applicationName;
     }
 #elif defined(__EMSCRIPTEN__)
-    // $HOME (/home/web_user) is persisted per client in IndexedDB by the page.
+    // Same place RuntimeConfigFile::ApplicationDataDirectory() resolves to on the web (the
+    // generic XDG branch). $HOME (/home/web_user) is persisted per client in IndexedDB.
     if (const char* home = std::getenv("HOME"); home && *home) {
-        return std::filesystem::path(home) / applicationName;
+        return std::filesystem::path(home) / ".local" / "share" / applicationName;
     }
 #endif
     return std::filesystem::current_path() / applicationName;

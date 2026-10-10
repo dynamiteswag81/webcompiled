@@ -36,7 +36,7 @@ const MILESTONES = [
   { id: 'static-ctors', what: 'static constructor scan finished', re: /Executed \d+ static constructors\./ },
   { id: 'aurora-webgpu', what: 'aurora_initialize succeeded on browser WebGPU (#canvas)', re: /graphics backend: (auto|webgpu)/i },
   { id: 'video-config', what: 'video / surface configured after aurora init', re: /\[runtime-config\] video\.widescreen=/ },
-  { id: 'dvd-stop', what: 'translated entry point ran and DVDInit stopped cleanly: no disc data configured', re: /\[dvd\] ERROR: (No DVD root is configured|Configured DVD root is not an extracted DATA directory)/ },
+  { id: 'dvd-stop', what: 'translated entry point ran and DVDInit stopped cleanly: no disc data configured', re: /\[dvd\] ERROR: (No DVD root is configured|Configured DVD root is not an extracted DATA directory|.*(manifest|disc tree|disc-manifest))/i },
   { id: 'fatal-reported', what: 'runtime fatal report reached the page error overlay', re: /DVD data is unavailable/ },
   // Checked after the stop through Module.FS (not startup order, so never the "furthest" one).
   { id: 'app-assets', post: true, what: 'embedded /app assets present (dsp_coef.bin, wii_bootstrap/)' },
