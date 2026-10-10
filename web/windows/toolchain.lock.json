@@ -77,7 +77,7 @@
       "version": "6.0.12",
       "dest": "emsdk",
       "marker": "emsdk.py",
-      "hashSource": "Files: raw.githubusercontent.com/emscripten-core/emsdk at tag 6.0.12 (a GitHub /archive/ zip cannot be re-hashed reproducibly, so the three files emsdk needs are pinned individually); sha256 computed from the downloaded files. Packages: the three downloads 'emsdk install 6.0.12' performs on Windows, fetched here ahead of it with resume and a hash check; sha256 computed from the files at storage.googleapis.com (Google publishes no checksums for them).",
+      "hashSource": "Files: raw.githubusercontent.com/emscripten-core/emsdk at tag 6.0.12 (a GitHub /archive/ zip cannot be re-hashed reproducibly, so the files emsdk.py reads are pinned individually); sha256 computed from the downloaded files. Packages: the three downloads 'emsdk install 6.0.12' performs on Windows, fetched here ahead of it with resume and a hash check; sha256 computed from the files at storage.googleapis.com (Google publishes no checksums for them).",
       "files": [
         {
           "name": "emsdk.py",
@@ -93,6 +93,21 @@
           "name": "emscripten-releases-tags.json",
           "url": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.12/emscripten-releases-tags.json",
           "sha256": "7ca0de1daeb269526980c3acedb5bce576a2c97b119619a91f28fb14cf8b9267"
+        },
+        {
+          "name": "legacy-emscripten-tags.txt",
+          "url": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.12/legacy-emscripten-tags.txt",
+          "sha256": "655fba09b0737a969c48bee75c57d32f1c6ebe6357b6486664088df02916ef61"
+        },
+        {
+          "name": "legacy-binaryen-tags.txt",
+          "url": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.12/legacy-binaryen-tags.txt",
+          "sha256": "ca22110b1921d7bcf6141254fd19d06882d2a7ddc8853445840c2e7c212c7f57"
+        },
+        {
+          "name": "llvm-tags-64bit.txt",
+          "url": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.12/llvm-tags-64bit.txt",
+          "sha256": "14de8911fcdec6b97a36cfa5371b93cc1544299c04d85f14dd564c109cb87f5a"
         }
       ],
       "packages": [
