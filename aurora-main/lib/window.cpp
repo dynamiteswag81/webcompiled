@@ -22,6 +22,10 @@
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_stdinc.h>
 #include <SDL3/SDL_pixels.h>
+#ifdef __EMSCRIPTEN__
+#include <cmath>
+#include <emscripten/html5.h>
+#endif
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -343,11 +347,48 @@ void process_event(SDL_Event& event) {
 }
 } // namespace
 
+#ifdef __EMSCRIPTEN__
+namespace {
+// The page sizes the canvas with CSS. SDL only follows that on a browser resize event, so a
+// layout change (the stage appearing, an overlay, fullscreen) or the initial size would leave
+// the drawing buffer stretched. Match the window to the canvas's CSS size every update; SDL
+// then sizes the drawing buffer to CSS size x devicePixelRatio and reports a resize.
+void sync_canvas_size() {
+  if (g_window == nullptr) {
+    return;
+  }
+  const char* selector =
+      SDL_GetStringProperty(SDL_GetWindowProperties(g_window), SDL_PROP_WINDOW_EMSCRIPTEN_CANVAS_ID_STRING, "#canvas");
+  double cssWidth = 0.0;
+  double cssHeight = 0.0;
+  if (emscripten_get_element_css_size(selector, &cssWidth, &cssHeight) != EMSCRIPTEN_RESULT_SUCCESS) {
+    return;
+  }
+  const int width = static_cast<int>(std::lround(cssWidth));
+  const int height = static_cast<int>(std::lround(cssHeight));
+  if (width <= 0 || height <= 0) {
+    return; // hidden (display: none): keep the last size
+  }
+  int currentWidth = 0;
+  int currentHeight = 0;
+  SDL_GetWindowSize(g_window, &currentWidth, &currentHeight);
+  if (width != currentWidth || height != currentHeight) {
+    SDL_SetWindowSize(g_window, width, height);
+  }
+}
+} // namespace
+#endif
+
 const AuroraEvent* poll_events() {
   g_events.clear();
   SDL_Event event;
   // Clear out the previous scroll values to prevent ghost input
   input::set_mouse_scroll(0, 0);
+#ifdef __EMSCRIPTEN__
+  // Never block in SDL_WaitEvent on the web: the page's only thread must keep returning to the
+  // browser, and a paused game still yields every frame from its own loop.
+  sync_canvas_size();
+#else
   if (is_paused()) {
     if (SDL_WaitEvent(&event)) {
       process_event(event);
@@ -355,6 +396,7 @@ const AuroraEvent* poll_events() {
       Log.warn("SDL_WaitEvent failed: {}", SDL_GetError());
     }
   }
+#endif
   while (SDL_PollEvent(&event)) {
     process_event(event);
   }
@@ -430,7 +472,11 @@ bool create_window(AuroraBackend backend) {
     Log.error("Failed to create window: {}", SDL_GetError());
     return false;
   }
+#ifndef __EMSCRIPTEN__
+  // The page decides the canvas size on the web; a minimum would only force a stretched buffer
+  // on small screens.
   SDL_SetWindowMinimumSize(g_window, 640, 480);
+#endif
   g_displayMode.store(g_config.startFullscreen ? AURORA_DISPLAY_MODE_BORDERLESS : AURORA_DISPLAY_MODE_WINDOWED,
                       std::memory_order_release);
 #if defined(_WIN32)
