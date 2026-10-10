@@ -6,10 +6,10 @@ Wii. It is built so that someone who owns the game can host it, and anyone with 
 or Edge can open the URL and play: no install, no emulator, no per-player game files.
 
 > [!WARNING]
-> **In development.** With a real disc the browser build boots to the title screen and plays the
-> attract race, but it is not playable yet: the crashes and missing input found in that first run
-> are fixed in this branch and waiting to be re-tested on a real PC. The current state is tracked
-> in [docs/web-port.md](docs/web-port.md#status).
+> **In development, but playable.** Built from a real PAL disc on Windows with `build.bat`, both
+> Mario Kart Wii and Retro Rewind run in Chrome/Edge with keyboard input (Retro Rewind tested to
+> its menus at 60 FPS). Expect slowdowns ("laggy") and rough edges; online play is not available.
+> The current state is tracked in [docs/web-port.md](docs/web-port.md#status).
 
 > [!IMPORTANT]
 > There is no Nintendo code, no assets and no game data in this repository, and no pre-translated
@@ -25,13 +25,17 @@ No programming tools needed. You need Windows 10 or 11 (64-bit), about 20 GB of 
    **Download ZIP**. Unzip it to a short folder path, for example `C:\WebCompiled`.
 2. **Add your game.** Put your own Mario Kart Wii disc file (`.rvz`, `.iso`, `.wbfs`, `.wia`,
    `.gcz`, `.ciso` or `.gcm`) into the `web\game` folder. Only one disc file.
+   *Optional:* also put the [Retro Rewind](#retro-rewind) `RetroRewind6` folder in `web\game`
+   to get Retro Rewind as a second game.
 3. **Double-click `build.bat`.** A window opens and shows numbered steps. The first time it
    downloads its tools (about 1.2 GB) and builds the game for the browser, which takes about
-   30 minutes. Later double-clicks skip all of that and start in seconds.
-4. **Play.** When it's ready it opens your browser at the address it prints (usually
-   <http://localhost:8080>). Keep the window open while you play; closing it stops the server.
+   30 minutes. Running it again only rebuilds what changed. It only builds; it does not start
+   anything.
+4. **Double-click `start-server.bat` to play.** It opens a window that runs the game server and
+   opens your browser at <http://localhost:8080>. Pick the game on the start screen. **Close that
+   window to stop the server.** Start it again whenever you want to play; no rebuild needed.
 
-If something goes wrong, the window stays open and says what happened, what usually fixes it,
+If the build goes wrong, its window stays open and says what happened, what usually fixes it,
 and where the full log is (`web\build\build.log`).
 
 ## Let other people play
@@ -39,8 +43,9 @@ and where the full log is (`web\build\build.log`).
 Browsers only allow the graphics API the game uses (WebGPU) on secure pages: `https://` or the
 same computer's `localhost`. So other devices need HTTPS.
 
-* **On your own network:** run `build.bat --lan` (or `web/host.sh --https --lan` on Linux and
-  macOS). It makes a self-signed certificate and prints addresses like `https://192.168.1.20:8080`.
+* **On your own network:** start the server with `start-server.bat --lan` (or
+  `web/host.sh --https --lan` on Linux and macOS). It makes a self-signed certificate; other
+  devices open `https://<this PC's IP address>:8080`.
   Other devices see a certificate warning the first time; they can continue past it once.
 * **Over the internet:** put a server with a real certificate in front of it, such as Caddy, a
   Cloudflare Tunnel or Tailscale. The [hosting guide](docs/web-hosting.md#let-other-people-play)
@@ -67,15 +72,18 @@ of them and says what's missing. `web/host.sh --help` lists the options (`--http
 
 ### Hosting the files on another server
 
-`web/host.sh --build-only` (or `build.bat --no-serve`) leaves a folder of static files in
+`build.bat` (or `web/host.sh --build-only`) leaves a folder of static files in
 `web/dist/` that any web server with HTTP Range support can host. See the
 [hosting guide](docs/web-hosting.md) for server settings, caching and compression.
 
 ### Retro Rewind
 
-Put the [Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind) `RetroRewind6` folder next to
-the disc in `web/game/`. It is built as a second game, and players choose between Mario Kart Wii
-and Retro Rewind on the start screen. Online play (Retro-WFC) is not available in the browser.
+Put the [Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind) `RetroRewind6` folder (the
+one containing `Binaries\Code.pul` and `xml\RetroRewind6.xml`) next to the disc in `web/game/`.
+It is built as a second game, and players choose between Mario Kart Wii and Retro Rewind on the
+start screen. If you already play Retro Rewind through Wheel Wizard and Dolphin, a complete copy
+is usually in `%APPDATA%\Dolphin Emulator\Load\Riivolution\WheelWizard\RetroRewind6`; copy that
+folder. Online play (Retro-WFC) is not available in the browser.
 
 ## How it works
 
@@ -122,7 +130,8 @@ precompiled in `web/prebuilt/`, so a host only compiles the runtime and their ow
 
 | Path | What it is |
 | --- | --- |
-| `build.bat` | One-click Windows build and server (see "Host it yourself") |
+| `build.bat` | One-click Windows build (see "Host it yourself") |
+| `start-server.bat` | Starts the game server; closing its window stops it |
 | `web/` | Host scripts, build scripts, static server, the player page, browser tests |
 | `web/game/` | Where the host puts their own disc file (never committed) |
 | `web/prebuilt/` | Precompiled libraries without game content, for faster builds |

@@ -7,13 +7,14 @@ rem  its built-in Windows PowerShell 5.1) and no administrator rights.
 rem  Put your own game file in the web\game folder first.
 rem
 rem  First run: downloads a pinned toolchain into the tools folder, builds
-rem  the game for the browser (about 30 minutes), then serves it and opens
-rem  your browser. Later runs start in seconds.
+rem  the game for the browser (about 30 minutes). Later runs finish in seconds.
+rem  To play, double-click start-server.bat (closing its window stops the server).
 rem
 rem  Options (all optional, passed to web\windows\build-windows.ps1):
 rem    --rebuild   build again   --jobs N   use less memory/CPU
+rem    --serve     also start the server when done (normally use start-server.bat)
 rem    --port N    other port    --lan      let other devices connect
-rem    --no-serve  build only    --no-browser
+rem    --no-browser
 rem
 rem  Set MKW_NO_PAUSE=1 to skip the final "press any key" (for scripts).
 rem

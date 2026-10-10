@@ -88,3 +88,8 @@ output.txt
 DATA/
 __pycache__/
 *.pyc
+
+# Self-signed HTTPS certificate and private key made by serve.py --https / start-server.bat --lan
+/web/.certs/
+*.pem
+*.key

@@ -12,7 +12,9 @@
       3. installs the pinned Emscripten SDK into tools\emsdk (first run only)
       4-6. extracts, translates and compiles the game with web\host.ps1 / web\build.ps1 and
          assembles web\dist (skipped when nothing changed since the last run)
-      7. starts web\serve.py on http://localhost:8080/ and opens it in the browser
+      7. (only with --serve) starts web\serve.py on http://localhost:8080/ and opens the browser.
+         Normally it stops after building: double-click start-server.bat to play; closing that
+         window stops the server.
 
     Everything is logged to web\build\build.log. No admin rights; nothing outside this folder is
     changed (the user-level environment is left alone).
@@ -22,7 +24,8 @@
       --jobs N         limit build parallelism (use on PCs with little RAM)
       --port N         port to serve on (default 8080)
       --lan            let other devices on the network connect (see the note printed)
-      --no-serve       build only, do not start the server
+      --serve          start the server after building (default: build only; use start-server.bat)
+      --no-serve       build only (the default; kept for compatibility)
       --no-browser     do not open the browser
       --tools-only     install the toolchain and stop
       --game DIR       use DIR instead of web\game
@@ -53,7 +56,7 @@ $script:Started = Get-Date
 # Options
 # ---------------------------------------------------------------------------
 $opt = @{
-    Rebuild = $false; Jobs = 0; Port = 8080; Lan = $false; NoServe = $false; NoBrowser = $false
+    Rebuild = $false; Jobs = 0; Port = 8080; Lan = $false; NoServe = $true; NoBrowser = $false
     ToolsOnly = $false; Game = ''; ToolsDir = ''; Lock = ''; NoOpenFolder = $false; Help = $false
     Dist = ''; Python = ''; HostScript = ''
 }
@@ -66,6 +69,7 @@ while ($ai -lt $argList.Count) {
         'jobs' { $ai++; $opt.Jobs = [int]$argList[$ai] }
         'port' { $ai++; $opt.Port = [int]$argList[$ai] }
         'lan' { $opt.Lan = $true }
+        'serve' { $opt.NoServe = $false }
         'no-serve' { $opt.NoServe = $true }
         'noserve' { $opt.NoServe = $true }
         'no-browser' { $opt.NoBrowser = $true }
@@ -488,7 +492,8 @@ function Invoke-Main {
 
     if ($opt.NoServe) {
         Write-Say ''
-        Write-Say 'Done (--no-serve). Run build.bat again to start the game.' 'Green'
+        Write-Say 'Done. To play, double-click start-server.bat in this folder (closing its window' 'Green'
+        Write-Say 'stops the server), then open http://localhost:8080/ in Chrome or Edge.' 'Green'
         return 0
     }
 
