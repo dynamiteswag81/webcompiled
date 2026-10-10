@@ -179,6 +179,10 @@ struct ProcessTranscriptState {
 };
 
 std::filesystem::path GetDefaultRuntimeLogDirectory() {
+#if defined(__EMSCRIPTEN__)
+    // Keep run logs out of the IndexedDB-persisted $HOME (see RuntimePlatform::LogDirectory).
+    return std::filesystem::path("/tmp/WiiCompiled/Logs");
+#endif
     return RuntimeConfigFile::ApplicationDataDirectory() / "Logs";
 }
 

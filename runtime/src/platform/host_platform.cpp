@@ -93,6 +93,11 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
 }
 
 std::filesystem::path LogDirectory(std::string_view applicationName) {
+#if defined(__EMSCRIPTEN__)
+    // Not under $HOME: the page persists $HOME to IndexedDB after every write, and run logs
+    // would grow that store without bound. The browser console is the web log anyway.
+    return std::filesystem::path("/tmp") / applicationName / "Logs";
+#endif
     return ApplicationDataDirectory(applicationName) / "Logs";
 }
 
