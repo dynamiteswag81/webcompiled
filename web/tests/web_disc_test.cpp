@@ -149,6 +149,13 @@ int main(int argc, char** argv) {
     CHECK(WebDisc::RelativePath("/disc") == std::optional<std::string>(""), "relpath root");
     CHECK(!WebDisc::RelativePath("/discs/files/x").has_value(), "relpath prefix");
     CHECK(!WebDisc::RelativePath("/home/web_user/x").has_value(), "relpath other");
+    // This page configures no mod pack (Module.mkwProduct): there is no mod mount.
+    CHECK(!WebDisc::ModRootPath().has_value(), "no mod mount without Module.mkwProduct.modRoot");
+    CHECK(!WebDisc::Locate("/mods/RetroRewind6/x").has_value(), "no mod paths without a mod mount");
+    {
+        const auto location = WebDisc::Locate("/disc/sys/fst.bin");
+        CHECK(location && location->mount == WebDisc::Mount::Disc && location->relPath == "sys/fst.bin", "Locate disc path");
+    }
 
     // --- Manifest-driven listing -------------------------------------------------------------
     {

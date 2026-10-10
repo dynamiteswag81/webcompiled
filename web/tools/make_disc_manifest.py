@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Write the disc manifest the web build reads instead of scanning the disc root.
 
-Usage: python3 web/tools/make_disc_manifest.py <disc_root> <out.json>
+Usage: python3 web/tools/make_disc_manifest.py [--tree] <root> <out.json>
 
-<disc_root> is an extracted DATA partition (it contains `sys/fst.bin` and `files/`), normally
+<root> is an extracted DATA partition (it contains `sys/fst.bin` and `files/`), normally
 already copied to `web/dist/disc/`; <out.json> is normally `web/dist/disc-manifest.json`.
+Without --tree a root that is not a DATA partition is refused. With --tree any directory is
+accepted (mod packs: `python3 web/tools/make_disc_manifest.py --tree dist/mods/RetroRewind6
+dist/mods/RetroRewind6-manifest.json`, giving root "RetroRewind6/").
 
 Format (version 1, UTF-8 JSON):
   {
     "format": "wiicompiled-disc-manifest",
     "version": 1,
-    "root": "disc/",                   # disc tree URL, relative to the manifest's own URL
+    "root": "disc/",                   # tree URL, relative to the manifest's own URL
     "fileCount": 1234,
     "totalBytes": 4321,
     "files": {"files/Race/Course/x.szs": 123456, "sys/fst.bin": 4096, ...},
@@ -64,15 +67,19 @@ def walk(disc_root):
 
 
 def main(argv):
-    if len(argv) != 3:
+    args = argv[1:]
+    tree = "--tree" in args
+    args = [arg for arg in args if arg != "--tree"]
+    if len(args) != 2 or any(arg.startswith("--") for arg in args):
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
-    disc_root, out_path = argv[1], argv[2]
+    disc_root, out_path = args
     if not os.path.isdir(disc_root):
         fail(f"{disc_root} is not a directory")
-    if not os.path.isfile(os.path.join(disc_root, "sys", "fst.bin")) or \
-            not os.path.isdir(os.path.join(disc_root, "files")):
-        fail(f"{disc_root} is not an extracted DATA partition (expected sys/fst.bin and files/)")
+    if not tree and (not os.path.isfile(os.path.join(disc_root, "sys", "fst.bin")) or
+                     not os.path.isdir(os.path.join(disc_root, "files"))):
+        fail(f"{disc_root} is not an extracted DATA partition (expected sys/fst.bin and files/); "
+             "pass --tree for a mod pack or other tree")
 
     files, directories = walk(disc_root)
 

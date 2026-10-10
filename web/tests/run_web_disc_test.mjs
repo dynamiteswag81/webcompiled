@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// Drives web/tests/web_disc_test.cpp: builds a fake extracted disc tree (pseudo-random bytes,
-// nested directories, an empty directory, awkward file names, a >16 MiB file), runs
-// web/tools/make_disc_manifest.py on it, serves it with a Range-capable test server, then runs
-// the wasm test under Node (JSPI) and in headless Chromium (two page loads: IDBFS write, then
-// verify after reload). Build first: web/tests/run_web_disc_test.sh does both.
+// Drives web/tests/web_disc_test.cpp and web/tests/web_riivolution_test.cpp: builds a fake
+// extracted disc tree (pseudo-random bytes, nested directories, an empty directory, awkward file
+// names, a >16 MiB file) and a fake Retro Rewind pack (mods/RetroRewind6: Riivolution XMLs plus
+// files/folders), runs web/tools/make_disc_manifest.py on both (--tree for the pack), serves
+// them with a Range-capable test server, then runs the wasm tests under Node (JSPI) and in
+// headless Chromium (disc test: two page loads, IDBFS write then verify after reload).
+// Build first: web/tests/run_web_disc_test.sh does both.
 //
-// usage: node web/tests/run_web_disc_test.mjs <dir with web_disc_test.mjs> [--no-node] [--no-browser]
+// usage: node web/tests/run_web_disc_test.mjs <dir with the test .mjs files> [--no-node] [--no-browser]
 // env:   MKW_JSPI_NODE   Node binary with JSPI (default: this node if it has it, else emsdk's)
 //        MKW_CHROMIUM    Chromium binary (default /opt/pw-browsers/chromium)
 //        MKW_PLAYWRIGHT  Playwright entry (default /opt/node-tools/node_modules/playwright/index.mjs)
@@ -101,6 +103,67 @@ if (manifest.format !== 'wiicompiled-disc-manifest' || manifest.version !== 1 ||
 const badGen = spawnSync('python3', [path.join(repo, 'web/tools/make_disc_manifest.py'), path.join(disc, 'files'),
                                      path.join(work, 'bad.json')], { encoding: 'utf8' });
 if (badGen.status === 0) fail('make_disc_manifest.py accepted a directory without sys/fst.bin');
+
+// --- Fake Retro Rewind pack (layout documented in web_riivolution_test.cpp) ------------------
+const packDir = path.join(site, 'mods', 'RetroRewind6');
+const packFiles = {
+  'Scene/UI/MenuSingle_E.szs': 70_000,
+  'Binaries/Code.pul': 4100,
+  'Race/Course/castle.szs': 300_000,
+  'Race/Course/mario.szs': 1234,
+  'Race/Course/sub/old_course.szs': 99_999,
+  'ByName/Award.szs': 5000,
+  'Extras/extra.bin': 10,
+};
+for (const [rel, size] of Object.entries(packFiles)) {
+  const file = path.join(packDir, ...rel.split('/'));
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, expected(rel, size));
+}
+const packXml = `<?xml version="1.0" encoding="UTF-8"?>
+<wiidisc version="1" root="/RetroRewind6">
+  <id game="RMC"/>
+  <options>
+    <section name="Retro Rewind">
+      <option name="Pack">
+        <choice name="Enabled"><patch id="pack"/></choice>
+      </option>
+      <option name="Extras">
+        <choice name="Enabled"><patch id="extras"/></choice>
+      </option>
+    </section>
+  </options>
+  <patch id="pack">
+    <file external="Scene/UI/MenuSingle_E.szs" disc="/Scene/UI/MenuSingle_E.szs"/>
+    <file external="Scene/UI/missing.szs" disc="/Scene/UI/missing.szs"/>
+    <file external="binaries/code.pul" disc="/rr/Code.pul" create="true"/>
+    <folder external="Race/Course" disc="/Race/Course" create="true"/>
+    <folder external="ByName"/>
+    <savegame external="/RetroRewind6/save/RetroWFC" clone="false"/>
+  </patch>
+  <patch id="extras">
+    <file external="Extras/extra.bin" disc="/extra.bin" create="true"/>
+  </patch>
+</wiidisc>
+`;
+fs.mkdirSync(path.join(packDir, 'xml'), { recursive: true });
+fs.writeFileSync(path.join(packDir, 'xml', 'RetroRewind6.xml'), packXml);
+fs.mkdirSync(path.join(packDir, 'riivolution'), { recursive: true });
+fs.writeFileSync(path.join(packDir, 'riivolution', 'Alt.xml'), '<wiidisc version="1"/>\n');
+fs.writeFileSync(path.join(packDir, 'riivolution', 'notes.txt'), 'not an xml\n');
+const packManifestPath = path.join(site, 'mods', 'RetroRewind6-manifest.json');
+const refused = spawnSync('python3', [path.join(repo, 'web/tools/make_disc_manifest.py'), packDir, packManifestPath],
+                          { encoding: 'utf8' });
+if (refused.status === 0) fail('make_disc_manifest.py accepted a mod pack without --tree');
+const packGen = spawnSync('python3', [path.join(repo, 'web/tools/make_disc_manifest.py'), '--tree', packDir,
+                                      packManifestPath], { encoding: 'utf8' });
+process.stdout.write(packGen.stdout);
+process.stderr.write(packGen.stderr);
+if (packGen.status !== 0) fail('make_disc_manifest.py --tree failed');
+const packManifest = JSON.parse(fs.readFileSync(packManifestPath, 'utf8'));
+if (packManifest.root !== 'RetroRewind6/' || packManifest.fileCount !== Object.keys(packFiles).length + 3) {
+  fail(`unexpected pack manifest: root ${packManifest.root}, ${packManifest.fileCount} files`);
+}
 console.log('manifest generator: OK');
 
 // Server-side damage the manifest does not know about.
@@ -115,34 +178,45 @@ const testArgs = [
   ...noRange.map((rel) => `--norange=${rel}`),
 ];
 
+// One page for every test module; ?test= picks the entry from test-config.json.
 const page = `<!doctype html>
 <meta charset="utf-8"><title>web disc test</title><pre id="log"></pre>
 <script type="module">
 const params = new URLSearchParams(location.search);
-const config = await (await fetch('test-config.json')).json();
+const config = (await (await fetch('test-config.json')).json())[params.get('test')];
 const out = document.getElementById('log');
 const print = (line) => { console.log(line); out.textContent += line + '\\n'; };
-const createModule = (await import('./build/web_disc_test.mjs')).default;
-// No mkwDiscManifestUrl: exercises the default ('disc-manifest.json' next to the page).
+const createModule = (await import('./build/' + config.module)).default;
+// No manifest URLs: exercises the defaults ('disc-manifest.json' next to the page, and
+// mkwProduct.modRoot + '-manifest.json' for the mod pack).
+const extra = params.get('persist') ? ['--persist=' + params.get('persist'), '--nonce=' + params.get('nonce')] : [];
 createModule({
-  arguments: [...config.args, '--persist=' + params.get('persist'), '--nonce=' + params.get('nonce')],
+  ...config.options,
+  arguments: [...config.args, ...extra],
   print,
   printErr: (line) => console.warn(line),
   onAbort: (what) => print('FAIL: aborted: ' + what),
 }).catch((e) => print('FAIL: ' + (e && e.stack || e)));
 </script>
 `;
+const retroRewind = { id: 'RetroRewind', modRoot: 'mods/RetroRewind6' };
+const browserTests = {
+  disc: { module: 'web_disc_test.mjs', args: testArgs, options: {} },
+  riivolution: { module: 'web_riivolution_test.mjs', args: ['--pack'], options: { mkwProduct: retroRewind } },
+};
 
 const server = await startServer({
   mounts: [{ prefix: '/build/', dir: buildDir }, { prefix: '/', dir: site }],
   noRangePrefixes: noRange.map((rel) => `/disc/${rel}`),
   pages: {
     '/index.html': { type: 'text/html; charset=utf-8', body: page },
-    '/test-config.json': { type: 'application/json', body: JSON.stringify({ args: testArgs }) },
+    '/test-config.json': { type: 'application/json', body: JSON.stringify(browserTests) },
   },
 });
 const origin = `http://127.0.0.1:${server.port}`;
 console.log(`serving ${site} at ${origin}`);
+
+let failed = false;
 
 // Sanity-check the test server's Range handling itself.
 {
@@ -156,35 +230,65 @@ console.log(`serving ${site} at ${origin}`);
   if (past.status !== 416) fail(`test server should answer 416 past EOF, got ${past.status}`);
 }
 
-let failed = false;
 
 // --- Node -----------------------------------------------------------------------------------
+const DONE = /^(PASS|FAIL) web (disc|riivolution) test|^FAIL: /;
 if (runNode) {
   const emsdkNode = '/opt/emsdk/node/24.19.0_64bit/bin/node';
   const jspiNode = process.env.MKW_JSPI_NODE ||
     (typeof WebAssembly.Suspending == 'function' ? process.execPath : emsdkNode);
-  console.log(`--- Node (${jspiNode})`);
-  const before = server.log.length;
   // spawnSync would block this process's event loop and with it the server, so spawn async.
   const { spawn } = await import('node:child_process');
-  const child = spawn(jspiNode, ['--experimental-wasm-jspi', path.join(here, 'web_disc_node_host.mjs'),
-                                 path.resolve(buildDir, 'web_disc_test.mjs'), `${origin}/disc-manifest.json`,
-                                 JSON.stringify([...testArgs, '--persist=none'])],
-                      { stdio: 'inherit' });
-  const code = await new Promise((resolve) => child.on('exit', resolve));
-  const requests = server.log.slice(before);
-  const ranged = requests.filter((r) => r.range).length;
-  const notFound = requests.filter((r) => r.status === 404).map((r) => r.path);
-  console.log(`node: exit ${code}; ${requests.length} HTTP requests (${ranged} with Range); 404s: ${notFound.join(', ')}`);
-  if (code !== 0) failed = true;
+  const runModule = async (label, module, options) => {
+    console.log(`--- Node: ${label} (${jspiNode})`);
+    const before = server.log.length;
+    const child = spawn(jspiNode, ['--experimental-wasm-jspi', path.join(here, 'web_disc_node_host.mjs'),
+                                   path.resolve(buildDir, module), JSON.stringify(options)],
+                        { stdio: 'inherit' });
+    const code = await new Promise((resolve) => child.on('exit', resolve));
+    if (code !== 0) failed = true;
+    return { code, requests: server.log.slice(before) };
+  };
+
+  const disc = await runModule('disc', 'web_disc_test.mjs', {
+    arguments: [...testArgs, '--persist=none'],
+    mkwDiscManifestUrl: `${origin}/disc-manifest.json`,
+  });
+  const ranged = disc.requests.filter((r) => r.range).length;
+  const notFound = disc.requests.filter((r) => r.status === 404).map((r) => r.path);
+  console.log(`node disc: exit ${disc.code}; ${disc.requests.length} HTTP requests (${ranged} with Range); ` +
+              `404s: ${notFound.join(', ')}`);
   if (!notFound.includes('/disc/files/gone.bin')) {
     console.error('FAIL: expected the missing file to be requested and answered 404');
     failed = true;
   }
-  if (!requests.some((r) => r.path === '/disc/files/Race/Kart/kart Mario+Peach #1 %20.szs' && r.status === 206)) {
+  if (!disc.requests.some((r) => r.path === '/disc/files/Race/Kart/kart Mario+Peach #1 %20.szs' && r.status === 206)) {
     console.error('FAIL: file name with special characters was not fetched correctly');
     failed = true;
   }
+
+  // Node has no page URL, so the mod manifest URL is given absolutely; modRoot still names the
+  // mount (/mods/RetroRewind6).
+  const riivo = await runModule('riivolution', 'web_riivolution_test.mjs', {
+    arguments: ['--pack'],
+    mkwProduct: retroRewind,
+    mkwModManifestUrl: `${origin}/mods/RetroRewind6-manifest.json`,
+    mkwDiscPrefetchManifest: false,
+  });
+  const packReads = riivo.requests.filter((r) => r.path.startsWith('/mods/RetroRewind6/') && r.status === 206);
+  console.log(`node riivolution: exit ${riivo.code}; ${packReads.length} Range reads from the pack; ` +
+              `disc requests: ${riivo.requests.filter((r) => r.path.startsWith('/disc')).length}`);
+  if (riivo.requests.some((r) => r.path.startsWith('/disc'))) {
+    console.error('FAIL: the riivolution test should never touch the disc mount');
+    failed = true;
+  }
+  const noPack = await runModule('riivolution, missing pack manifest', 'web_riivolution_test.mjs', {
+    arguments: ['--no-pack'],
+    mkwProduct: retroRewind,
+    mkwModManifestUrl: `${origin}/mods/missing-manifest.json`,
+    mkwDiscPrefetchManifest: false,
+  });
+  console.log(`node riivolution (no pack): exit ${noPack.code}`);
 }
 
 // --- Chromium -------------------------------------------------------------------------------
@@ -205,7 +309,7 @@ if (runBrowser) {
     const text = msg.text();
     lines.push(text);
     console.log(`[chromium] ${text}`);
-    if (waiter && /^(PASS|FAIL) web disc test|^FAIL: /.test(text)) waiter(text);
+    if (waiter && DONE.test(text)) waiter(text);
   });
   tab.on('pageerror', (error) => {
     console.log(`[chromium] pageerror: ${error.message}`);
@@ -222,14 +326,17 @@ if (runBrowser) {
     return line;
   };
   const nonce = Math.random().toString(36).slice(2);
-  const first = await runPage(`persist=write&nonce=${nonce}`);
+  const first = await runPage(`test=disc&persist=write&nonce=${nonce}`);
   if (!first.startsWith('PASS')) failed = true;
   // Give IDBFS autoPersist (setTimeout + IndexedDB transaction) time to store the unflushed file.
   await new Promise((resolve) => setTimeout(resolve, 2000));
-  const second = await runPage(`persist=verify&nonce=${nonce}`);
+  const second = await runPage(`test=disc&persist=verify&nonce=${nonce}`);
   if (!second.startsWith('PASS')) failed = true;
-  console.log(`chromium: write run: ${first}`);
-  console.log(`chromium: reload run: ${second}`);
+  const third = await runPage('test=riivolution');
+  if (!third.startsWith('PASS')) failed = true;
+  console.log(`chromium: disc write run: ${first}`);
+  console.log(`chromium: disc reload run: ${second}`);
+  console.log(`chromium: riivolution run: ${third}`);
   // browser.close() can hang while a JSPI stack is parked; the process exits below instead.
 }
 

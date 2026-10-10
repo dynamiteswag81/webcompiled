@@ -1,21 +1,28 @@
-// Disc streaming and save persistence for the WebAssembly build of WiiCompiled, linked with
-// --js-library (and -lidbfs.js). C++ side: runtime/src/hle/storage/web_disc.cpp.
+// Disc / mod-pack streaming and save persistence for the WebAssembly build of WiiCompiled,
+// linked with --js-library (and -lidbfs.js). C++ side: runtime/src/hle/storage/web_disc.cpp.
 //
-// Disc: the operator's static site holds the extracted DATA tree (`disc/sys`, `disc/files`)
-// plus a build-time `disc-manifest.json` (web/tools/make_disc_manifest.py). Reads are HTTP
-// Range requests awaited through JSPI (`__async: true`): the calling wasm stack is parked until
-// the bytes arrive; the LRU block cache lives on the C++ side.
+// Streamed trees ("mounts"): the operator's static site holds the extracted DATA tree
+// (`disc/sys`, `disc/files`) plus a build-time `disc-manifest.json`, and for a modded product the
+// mod pack (`mods/RetroRewind6/`) plus `mods/RetroRewind6-manifest.json`
+// (web/tools/make_disc_manifest.py). Reads are HTTP Range requests awaited through JSPI
+// (`__async: true`): the calling wasm stack is parked until the bytes arrive; the LRU block cache
+// lives on the C++ side. Mount ids match WebDisc::Mount (0 = disc at /disc, 1 = mod pack at
+// /mods/<last segment of modRoot>).
 //
-// Saves: `$HOME` (/home/web_user: Config.toml, the managed NAND, logs) is an IDBFS mount that is
-// populated before main() runs and persisted to IndexedDB automatically after every file close,
-// unlink, rename or mkdir (IDBFS autoPersist), plus on page hide.
+// Saves: `$HOME` (/home/web_user: Config.toml, the managed NAND, Riivolution saves) is an IDBFS
+// mount that is populated before main() runs and persisted to IndexedDB automatically after
+// every file close, unlink, rename or mkdir (IDBFS autoPersist), plus on page hide.
 //
 // Module options (all optional):
-//   mkwDiscManifestUrl  manifest URL, resolved against the page (default 'disc-manifest.json')
+//   mkwDiscManifestUrl  disc manifest URL, resolved against the page (default 'disc-manifest.json')
 //   mkwDiscBaseUrl      disc tree URL; default: the manifest's "root" resolved against the
 //                       manifest URL ('disc/' next to it)
+//   mkwProduct          {id: 'WiiCompiled' | 'RetroRewind', modRoot: 'mods/RetroRewind6'};
+//                       modRoot (page-relative) enables the mod mount
+//   mkwModManifestUrl   mod manifest URL (default modRoot + '-manifest.json')
+//   mkwModBaseUrl       mod tree URL (default: that manifest's "root", i.e. modRoot + '/')
 //   mkwDiscRetries      attempts per request for network errors / 5xx (default 4)
-//   mkwDiscPrefetchManifest  false: do not start fetching the manifest at module load
+//   mkwDiscPrefetchManifest  false: do not start fetching manifests at module load
 //   mkwPersistence      false keeps saves in memory only (default: on when IndexedDB exists)
 //   mkwPersistentDir    mount point of the persistent store (default '/home/web_user')
 //   onMkwStorageError   callback(message) for mount/sync failures
@@ -27,17 +34,29 @@ addToLibrary({
   $MkwDvd__deps: ['$MkwStorage'],
   $MkwDvd__postset: 'MkwDvd.init();',
   $MkwDvd: {
-    manifestUrl: null,
-    manifestPromise: null,
-    baseUrl: null,
+    // Per mount: {label, manifestPromise, baseUrl}; index = WebDisc::Mount.
+    mounts: [],
     warnedNoRange: false,
 
     init() {
       MkwStorage.install();
-      // Start the manifest download while the wasm module is still compiling.
+      MkwDvd.mounts = [{ label: 'disc' }, { label: 'mod' }];
+      // Start the manifest downloads while the wasm module is still compiling.
       if (globalThis.fetch && Module['mkwDiscPrefetchManifest'] !== false) {
-        MkwDvd.manifestPromise = MkwDvd.fetchManifest();
+        MkwDvd.manifest(0);
+        if (MkwDvd.modRoot()) MkwDvd.manifest(1);
       }
+    },
+
+    // Module.mkwProduct.modRoot without trailing slashes, or '' when the page has no mod.
+    modRoot() {
+      const root = Module['mkwProduct']?.['modRoot'];
+      return typeof root == 'string' ? root.replace(/[\/\\]+$/, '') : '';
+    },
+
+    modMountName() {
+      const name = MkwDvd.modRoot().split(/[\/\\]/).pop() ?? '';
+      return name === '.' || name === '..' ? '' : name;
     },
 
     pageUrl() {
@@ -51,16 +70,41 @@ addToLibrary({
         return new URL(url, base).href;
       } catch (e) {
         throw new Error(`cannot resolve URL "${url}"${base ? ` against ${base}` : ''} ` +
-                        '(set Module.mkwDiscManifestUrl / mkwDiscBaseUrl to absolute URLs)');
+                        '(set Module.mkwDiscManifestUrl / mkwModManifestUrl to absolute URLs)');
       }
     },
 
+    // {manifestUrl, baseUrl (explicit override or null), defaultRoot} for a mount.
+    sourceFor(mount) {
+      if (mount == 0) {
+        return {
+          manifestUrl: Module['mkwDiscManifestUrl'] || 'disc-manifest.json',
+          baseUrl: Module['mkwDiscBaseUrl'] || null,
+          defaultRoot: 'disc/',
+        };
+      }
+      const root = MkwDvd.modRoot();
+      if (!root && !Module['mkwModManifestUrl']) {
+        throw new Error('this page configures no mod pack (Module.mkwProduct.modRoot)');
+      }
+      return {
+        manifestUrl: Module['mkwModManifestUrl'] || `${root}-manifest.json`,
+        baseUrl: Module['mkwModBaseUrl'] || null,
+        defaultRoot: `${MkwDvd.modMountName()}/`,
+      };
+    },
+
+    manifest(mount) {
+      const state = MkwDvd.mounts[mount];
+      return state.manifestPromise ??= MkwDvd.fetchManifest(mount);
+    },
+
     // Resolves to the C++ listing text (see mkw_dvd_load_manifest); never rejects.
-    async fetchManifest() {
+    async fetchManifest(mount) {
+      const state = MkwDvd.mounts[mount];
       try {
-        const manifestUrl = MkwDvd.resolveUrl(
-          Module['mkwDiscManifestUrl'] || 'disc-manifest.json', MkwDvd.pageUrl());
-        MkwDvd.manifestUrl = manifestUrl;
+        const source = MkwDvd.sourceFor(mount);
+        const manifestUrl = MkwDvd.resolveUrl(source.manifestUrl, MkwDvd.pageUrl());
         const response = await MkwDvd.fetchWithRetry(manifestUrl, {});
         if (!response.ok) {
           throw new Error(`HTTP ${response.status} ${response.statusText} for ${manifestUrl}`);
@@ -72,11 +116,11 @@ addToLibrary({
             typeof files !== 'object' || files === null) {
           throw new Error(`${manifestUrl} is not a version 1 WiiCompiled disc manifest`);
         }
-        let base = Module['mkwDiscBaseUrl']
-          ? MkwDvd.resolveUrl(Module['mkwDiscBaseUrl'], MkwDvd.pageUrl())
-          : MkwDvd.resolveUrl(manifest['root'] ?? 'disc/', manifestUrl);
+        let base = source.baseUrl
+          ? MkwDvd.resolveUrl(source.baseUrl, MkwDvd.pageUrl())
+          : MkwDvd.resolveUrl(manifest['root'] ?? source.defaultRoot, manifestUrl);
         if (!base.endsWith('/')) base += '/';
-        MkwDvd.baseUrl = base;
+        state.baseUrl = base;
 
         const valid = (path) => typeof path == 'string' && path.length > 0 && !/[\t\n\r\0]/.test(path);
         const lines = [`MKWDISC\t1\t${base}`];
@@ -92,14 +136,14 @@ addToLibrary({
         }
         return lines.join('\n') + '\n';
       } catch (e) {
-        const message = `could not load the disc manifest: ${e && e.message || e}`;
+        const message = `could not load the ${state.label} manifest: ${e && e.message || e}`;
         err(`[dvd/web] ${message}`);
         return `ERROR\t${message.replace(/[\t\n\r]/g, ' ')}\n`;
       }
     },
 
-    urlFor(relPath) {
-      return MkwDvd.baseUrl + relPath.split('/').map(encodeURIComponent).join('/');
+    urlFor(mount, relPath) {
+      return MkwDvd.mounts[mount].baseUrl + relPath.split('/').map(encodeURIComponent).join('/');
     },
 
     // fetch() with retries for network failures and 5xx/429 responses.
@@ -122,8 +166,9 @@ addToLibrary({
       throw lastError;
     },
 
-    async read(relPath, offset, length, dest) {
-      const url = MkwDvd.urlFor(relPath);
+    async read(mount, relPath, offset, length, dest) {
+      if (!MkwDvd.mounts[mount]?.baseUrl) return -2; // manifest never loaded
+      const url = MkwDvd.urlFor(mount, relPath);
       let response;
       try {
         response = await MkwDvd.fetchWithRetry(url, {
@@ -158,8 +203,8 @@ addToLibrary({
         // The server ignored Range and sent the whole file: still correct, just slow.
         if (!MkwDvd.warnedNoRange) {
           MkwDvd.warnedNoRange = true;
-          err(`[dvd/web] ${MkwDvd.baseUrl} does not honor HTTP Range requests; every disc read ` +
-              'downloads the whole file. Host the site on a server with Range support.');
+          err(`[dvd/web] ${MkwDvd.mounts[mount].baseUrl} does not honor HTTP Range requests; every ` +
+              'read downloads the whole file. Host the site on a server with Range support.');
         }
         start = Math.min(offset, bytes.length);
       }
@@ -238,16 +283,19 @@ addToLibrary({
 
   mkw_dvd_load_manifest__deps: ['$MkwDvd', '$stringToNewUTF8'],
   mkw_dvd_load_manifest__async: true,
-  mkw_dvd_load_manifest: async () => {
-    MkwDvd.manifestPromise ??= MkwDvd.fetchManifest();
-    const listing = await MkwDvd.manifestPromise;
-    return stringToNewUTF8(listing);
-  },
+  mkw_dvd_load_manifest: async (mount) => stringToNewUTF8(await MkwDvd.manifest(mount)),
 
   mkw_dvd_read__deps: ['$MkwDvd', '$UTF8ToString'],
   mkw_dvd_read__async: true,
-  mkw_dvd_read: (relPath, offset, length, dest) =>
-    MkwDvd.read(UTF8ToString(relPath), offset, length, dest),
+  mkw_dvd_read: (mount, relPath, offset, length, dest) =>
+    MkwDvd.read(mount, UTF8ToString(relPath), offset, length, dest),
+
+  // Synchronous: the mod mount name ('RetroRewind6') or null when the page configures no mod.
+  mkw_dvd_mod_mount_name__deps: ['$MkwDvd', '$stringToNewUTF8'],
+  mkw_dvd_mod_mount_name: () => {
+    const name = MkwDvd.modMountName();
+    return name ? stringToNewUTF8(name) : 0;
+  },
 
   // Persists the save store now and waits for IndexedDB. Returns 1 on success, 0 when there is
   // no persistent store or the sync failed. Optional: autoPersist already syncs after writes.

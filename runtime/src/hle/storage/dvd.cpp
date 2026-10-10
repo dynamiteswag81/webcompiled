@@ -9,6 +9,7 @@
 // layer's caches must be notified explicitly that these bytes changed.
 extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "hle/storage/riivolution.h"
+#include "hle/web_host_fs.h"
 #include "ppc_runtime.h"
 #include "recomp_mod_loader.h"
 #include "runtime_config.h"
@@ -506,23 +507,25 @@ static void WalkDirectory(const fs::path& root, bool recursive, bool announceErr
 static void ScanDirectory(const fs::path& root, const std::string& virtualPrefix,
                           bool recursive = true, bool addNewFiles = true) {
 #ifdef __EMSCRIPTEN__
-    // The hosted disc tree has no Emscripten FS presence; its listing is the manifest.
-    if (const auto relRoot = WebDisc::RelativePath(root)) {
+    // Hosted trees (the disc, a streamed mod pack) have no Emscripten FS presence; their
+    // listing is the manifest.
+    {
         std::string prefix = virtualPrefix.empty() ? "/" : virtualPrefix;
         if (prefix.back() != '/' && prefix.back() != '\\') {
             prefix += "/";
         }
-        WebDisc::ForEachFile(*relRoot, recursive,
-                             [&](const std::string& relativeToRoot, const std::string& relPath,
-                                 uint64_t size) {
-                                 std::string dvdPath = prefix + relativeToRoot;
-                                 if (!addNewFiles && !DvdEntryExists(dvdPath)) {
-                                     return;
-                                 }
-                                 RegisterFileEntry(std::move(dvdPath), WebDisc::RootPath() / relPath,
-                                                   static_cast<uint32_t>(size));
-                             });
-        return;
+        const bool mounted = WebHostFs::ForEachMountedFile(
+            root, recursive,
+            [&](const fs::path& hostPath, const std::string& relativeToRoot, uint64_t size) {
+                std::string dvdPath = prefix + relativeToRoot;
+                if (!addNewFiles && !DvdEntryExists(dvdPath)) {
+                    return;
+                }
+                RegisterFileEntry(std::move(dvdPath), hostPath, static_cast<uint32_t>(size));
+            });
+        if (mounted) {
+            return;
+        }
     }
 #endif
     std::error_code ec;
@@ -602,6 +605,23 @@ static void ApplyFolderByNameMapping(const RuntimeRiivolution::Mapping& mapping)
         }
     };
 
+#ifdef __EMSCRIPTEN__
+    const bool mounted = WebHostFs::ForEachMountedFile(
+        mapping.hostPath, mapping.recursive,
+        [&](const fs::path& hostPath, const std::string&, uint64_t size) {
+            std::string name = HostPathText(hostPath.filename());
+            RuntimeHle::LowerInPlace(name);
+            const auto matches = discPathsByName.find(name);
+            if (matches == discPathsByName.end()) {
+                return;
+            }
+            for (const std::string& dvdPath : matches->second) {
+                RegisterFileEntry(dvdPath, hostPath, static_cast<uint32_t>(size));
+                ++replaced;
+            }
+        });
+    if (!mounted)
+#endif
     WalkDirectory(mapping.hostPath, mapping.recursive, /*announceErrors=*/false, applyEntry);
 
     RT_LOG(RT_TAG_DVD) << HostPathText(mapping.hostPath) << ": replaced " << replaced
@@ -626,7 +646,7 @@ static void ScanOverlayRoot(const RuntimeRiivolution::Overlay& overlay) {
                 break;
             }
             std::error_code ec;
-            const std::uintmax_t size = fs::file_size(mapping.hostPath, ec);
+            const std::uintmax_t size = WebHostFs::FileSize(mapping.hostPath, ec);
             if (!ec) {
                 RegisterFileEntry(mapping.discPath, mapping.hostPath, static_cast<uint32_t>(size));
             }
@@ -653,7 +673,7 @@ static fs::path ResolveDvdMappedHostPath(const std::string& dvdPath, const fs::p
     for (const auto& overlay : RuntimeRiivolution::Overlays()) {
         const fs::path candidate = overlay.root / fs::path(normalized.substr(1));
         std::error_code ec;
-        if (fs::is_regular_file(candidate, ec)) {
+        if (WebHostFs::IsRegularFile(candidate, ec)) {
             return candidate;
         }
     }

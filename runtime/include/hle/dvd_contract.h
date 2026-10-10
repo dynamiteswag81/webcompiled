@@ -299,10 +299,11 @@ inline bool ReadExact(const std::filesystem::path& hostPath,
     failure = HostReadFailure::None;
 
 #ifdef __EMSCRIPTEN__
-    // The hosted disc tree (WebDisc::RootPath()) is streamed over HTTP Range requests with the
-    // same failure contract; anything else (e.g. overlays in the Emscripten FS) reads below.
-    if (const auto relPath = WebDisc::RelativePath(hostPath)) {
-        switch (WebDisc::Read(*relPath, offset, length, destination)) {
+    // Hosted trees (the disc at /disc, the mod pack at /mods/<name>) are streamed over HTTP
+    // Range requests with the same failure contract; anything else (e.g. files in the
+    // Emscripten FS) reads below.
+    if (const auto location = WebDisc::Locate(hostPath)) {
+        switch (WebDisc::Read(location->mount, location->relPath, offset, length, destination)) {
         case WebDisc::ReadStatus::Ok:
             return true;
         case WebDisc::ReadStatus::MissingFile:

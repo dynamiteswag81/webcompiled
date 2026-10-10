@@ -20,6 +20,9 @@
 #include <vector>
 #include <toml.hpp>
 #include "platform/host_platform.h"
+#ifdef __EMSCRIPTEN__
+#include "hle/web_disc.h"
+#endif
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1004,6 +1007,16 @@ inline std::filesystem::path ResolvedDvdRoot() {
 
 /// The canonical Retro Rewind installation the frontend owns, or "" when none is recorded.
 inline std::string RetroRewindRoot(std::string fallback = "") {
+#if defined(__EMSCRIPTEN__)
+    // Web: the pack is streamed from the site as the WebDisc mod mount (/mods/<name>, from
+    // Module.mkwProduct.modRoot); Config.toml (in IndexedDB) normally names none. Callers apply
+    // it only for the Retro Rewind product.
+    if (fallback.empty()) {
+        if (const auto modRoot = WebDisc::ModRootPath()) {
+            fallback = modRoot->generic_string();
+        }
+    }
+#endif
     return Get().retroRewindRoot.value_or(std::move(fallback));
 }
 

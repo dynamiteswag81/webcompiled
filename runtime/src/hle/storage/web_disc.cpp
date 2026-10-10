@@ -1,6 +1,7 @@
-// WebAssembly disc backend: manifest-driven directory queries and JSPI-awaited HTTP Range reads
-// behind an LRU block cache. See runtime/include/hle/web_disc.h for the contract and
-// web/js/library_mkw_dvd.js for the JS imports. Native builds compile this file to nothing.
+// WebAssembly streamed trees (disc + mod pack): manifest-driven directory queries and
+// JSPI-awaited HTTP Range reads behind a shared LRU block cache. See
+// runtime/include/hle/web_disc.h for the contract and web/js/library_mkw_dvd.js for the JS
+// imports. Native builds compile this file to nothing.
 #ifdef __EMSCRIPTEN__
 
 #include "hle/web_disc.h"
@@ -17,16 +18,21 @@
 #include <utility>
 
 extern "C" {
-// JSPI-suspending imports (web/js/library_mkw_dvd.js).
+// Imports from web/js/library_mkw_dvd.js; `mount` is a WebDisc::Mount value.
 //
-// Fetches disc-manifest.json and returns a malloc'd, NUL-terminated listing the caller frees:
-//   "MKWDISC\t1\t<disc base URL>\n" then "F\t<size>\t<path>\n" / "D\t<path>\n" lines,
-// or "ERROR\t<message>\n". Never returns null except on allocation failure.
-char* mkw_dvd_load_manifest(void);
-// Reads [offset, offset + length) of a disc-relative path into dest. Returns the number of
-// bytes stored (less than length only at the server's end of file), or a negative code:
-// -1 not found (HTTP 404/410), -2 request failed after retries, -3 malformed response.
-int32_t mkw_dvd_read(const char* relPath, double offset, uint32_t length, uint8_t* dest);
+// JSPI-suspending. Fetches the mount's manifest and returns a malloc'd, NUL-terminated listing
+// the caller frees: "MKWDISC\t1\t<base URL>\n" then "F\t<size>\t<path>\n" / "D\t<path>\n"
+// lines, or "ERROR\t<message>\n". Never returns null except on allocation failure.
+char* mkw_dvd_load_manifest(int mount);
+// JSPI-suspending. Reads [offset, offset + length) of a mount-relative path into dest. Returns
+// the number of bytes stored (less than length only at the server's end of file), or a
+// negative code: -1 not found (HTTP 404/410), -2 request failed after retries, -3 malformed
+// response.
+int32_t mkw_dvd_read(int mount, const char* relPath, double offset, uint32_t length,
+                     uint8_t* dest);
+// Synchronous. The page's mod mount name (last segment of Module.mkwProduct.modRoot, e.g.
+// "RetroRewind6") as a malloc'd string the caller frees, or null when there is none.
+char* mkw_dvd_mod_mount_name(void);
 }
 
 namespace WebDisc {
@@ -42,7 +48,9 @@ struct CachedBlock {
     std::vector<uint8_t> data;
 };
 
-struct State {
+constexpr size_t kMountCount = 2;
+
+struct Tree {
     bool loaded = false;
     bool loading = false;
     bool failed = false;
@@ -54,6 +62,12 @@ struct State {
     std::unordered_map<std::string, uint32_t> fileByLowerPath;
     std::unordered_set<std::string> directories; // canonical paths, "" is the root
     std::unordered_map<std::string, std::string> directoryByLowerPath;
+};
+
+struct State {
+    Tree trees[kMountCount];
+    bool modRootResolved = false;
+    std::optional<std::filesystem::path> modRoot;
 
     size_t budget = kDefaultCacheBudget;
     std::list<CachedBlock> lru; // front = most recently used
@@ -64,6 +78,14 @@ struct State {
 State& S() {
     static State state;
     return state;
+}
+
+Tree& T(Mount mount) {
+    return S().trees[static_cast<size_t>(mount)];
+}
+
+const char* MountName(Mount mount) {
+    return mount == Mount::Disc ? "disc" : "mod";
 }
 
 std::string Lower(std::string text) {
@@ -101,13 +123,13 @@ std::string NormalizeRelative(const std::string& input) {
     return joined;
 }
 
-void AddDirectory(State& state, const std::string& path) {
+void AddDirectory(Tree& state, const std::string& path) {
     if (state.directories.insert(path).second) {
         state.directoryByLowerPath.emplace(Lower(path), path);
     }
 }
 
-bool Fail(State& state, std::string message, std::string* error) {
+bool Fail(Tree& state, std::string message, std::string* error) {
     state.failed = true;
     state.error = std::move(message);
     std::fprintf(stderr, "[dvd/web] ERROR: %s\n", state.error.c_str());
@@ -117,7 +139,7 @@ bool Fail(State& state, std::string message, std::string* error) {
     return false;
 }
 
-bool ParseListing(State& state, const char* text, std::string* error) {
+bool ParseListing(Tree& state, const char* text, std::string* error) {
     const char* cursor = text;
     bool header = true;
     std::map<std::string, uint64_t> files;
@@ -189,8 +211,8 @@ bool ParseListing(State& state, const char* text, std::string* error) {
     return true;
 }
 
-const FileRecord* FindFile(const std::string& relPath, uint32_t* indexOut = nullptr) {
-    State& state = S();
+const FileRecord* FindFile(Mount mount, const std::string& relPath, uint32_t* indexOut = nullptr) {
+    Tree& state = T(mount);
     const std::string path = NormalizeRelative(relPath);
     auto it = state.fileByPath.find(path);
     if (it == state.fileByPath.end()) {
@@ -205,8 +227,8 @@ const FileRecord* FindFile(const std::string& relPath, uint32_t* indexOut = null
     return &state.files[it->second];
 }
 
-std::optional<std::string> FindDirectory(const std::string& relPath) {
-    State& state = S();
+std::optional<std::string> FindDirectory(Mount mount, const std::string& relPath) {
+    Tree& state = T(mount);
     const std::string path = NormalizeRelative(relPath);
     if (state.directories.count(path)) {
         return path;
@@ -242,8 +264,48 @@ const std::filesystem::path& RootPath() {
     return root;
 }
 
-bool EnsureLoaded(std::string* error) {
+std::optional<std::filesystem::path> ModRootPath() {
     State& state = S();
+    if (!state.modRootResolved) {
+        state.modRootResolved = true;
+        if (char* name = mkw_dvd_mod_mount_name()) {
+            const std::string text = name;
+            std::free(name);
+            if (!text.empty() && text != "." && text != ".." &&
+                text.find_first_of("/\\") == std::string::npos) {
+                state.modRoot = std::filesystem::path("/mods") / text;
+            }
+        }
+    }
+    return state.modRoot;
+}
+
+std::optional<Location> Locate(const std::filesystem::path& hostPath) {
+    const std::string text = hostPath.lexically_normal().generic_string();
+    const auto under = [&text](const std::filesystem::path& root) -> std::optional<std::string> {
+        const std::string rootText = root.generic_string();
+        if (text == rootText || text == rootText + "/") {
+            return std::string();
+        }
+        if (text.size() <= rootText.size() || text.compare(0, rootText.size(), rootText) != 0 ||
+            text[rootText.size()] != '/') {
+            return std::nullopt;
+        }
+        return NormalizeRelative(text.substr(rootText.size() + 1));
+    };
+    if (auto rel = under(RootPath())) {
+        return Location{Mount::Disc, std::move(*rel)};
+    }
+    if (const auto modRoot = ModRootPath()) {
+        if (auto rel = under(*modRoot)) {
+            return Location{Mount::Mod, std::move(*rel)};
+        }
+    }
+    return std::nullopt;
+}
+
+bool EnsureLoaded(Mount mount, std::string* error) {
+    Tree& state = T(mount);
     if (state.loaded) {
         return true;
     }
@@ -257,16 +319,16 @@ bool EnsureLoaded(std::string* error) {
         // Only reachable if wasm were re-entered from a JS callback while the manifest fetch
         // is suspended, which the web build never does.
         if (error) {
-            *error = "disc manifest load re-entered";
+            *error = std::string(MountName(mount)) + " manifest load re-entered";
         }
         return false;
     }
 
     state.loading = true;
-    char* listing = mkw_dvd_load_manifest();
+    char* listing = mkw_dvd_load_manifest(static_cast<int>(mount));
     state.loading = false;
     if (!listing) {
-        return Fail(state, "out of memory while loading the disc manifest", error);
+        return Fail(state, "out of memory while loading a manifest", error);
     }
     const bool ok = ParseListing(state, listing, error);
     std::free(listing);
@@ -274,57 +336,54 @@ bool EnsureLoaded(std::string* error) {
         return false;
     }
     state.loaded = true;
-    std::fprintf(stderr, "[dvd/web] disc manifest: %zu file(s), %zu director(ies) at %s\n",
-                 state.files.size(), state.directories.size(), state.baseUrl.c_str());
+    std::fprintf(stderr, "[dvd/web] %s manifest: %zu file(s), %zu director(ies) at %s\n",
+                 MountName(mount), state.files.size(), state.directories.size(),
+                 state.baseUrl.c_str());
     return true;
 }
 
-const std::string& BaseUrl() {
-    return S().baseUrl;
+const std::string& BaseUrl(Mount mount) {
+    return T(mount).baseUrl;
 }
 
 bool IsDataRoot() {
-    return EnsureLoaded() && IsDirectory("files") && FileSize("sys/fst.bin").has_value();
+    return EnsureLoaded(Mount::Disc) && IsDirectory(Mount::Disc, "files") &&
+           FileSize(Mount::Disc, "sys/fst.bin").has_value();
 }
 
 std::optional<std::string> RelativePath(const std::filesystem::path& hostPath) {
-    const std::string root = RootPath().generic_string();
-    const std::string text = hostPath.lexically_normal().generic_string();
-    if (text == root || text == root + "/") {
-        return std::string();
-    }
-    if (text.size() <= root.size() || text.compare(0, root.size(), root) != 0 ||
-        text[root.size()] != '/') {
+    const auto location = Locate(hostPath);
+    if (!location || location->mount != Mount::Disc) {
         return std::nullopt;
     }
-    return NormalizeRelative(text.substr(root.size() + 1));
+    return location->relPath;
 }
 
-std::optional<uint64_t> FileSize(const std::string& relPath) {
-    if (!EnsureLoaded()) {
+std::optional<uint64_t> FileSize(Mount mount, const std::string& relPath) {
+    if (!EnsureLoaded(mount)) {
         return std::nullopt;
     }
-    const FileRecord* file = FindFile(relPath);
+    const FileRecord* file = FindFile(mount, relPath);
     if (!file) {
         return std::nullopt;
     }
     return file->size;
 }
 
-bool IsDirectory(const std::string& relPath) {
-    return EnsureLoaded() && FindDirectory(relPath).has_value();
+bool IsDirectory(Mount mount, const std::string& relPath) {
+    return EnsureLoaded(mount) && FindDirectory(mount, relPath).has_value();
 }
 
-void ForEachFile(const std::string& relDir, bool recursive, const FileVisitor& visit) {
-    if (!EnsureLoaded()) {
+void ForEachFile(Mount mount, const std::string& relDir, bool recursive, const FileVisitor& visit) {
+    if (!EnsureLoaded(mount)) {
         return;
     }
-    const std::optional<std::string> directory = FindDirectory(relDir);
+    const std::optional<std::string> directory = FindDirectory(mount, relDir);
     if (!directory) {
         return;
     }
     const std::string prefix = directory->empty() ? std::string() : *directory + "/";
-    const std::vector<FileRecord>& files = S().files;
+    const std::vector<FileRecord>& files = T(mount).files;
     auto it = std::lower_bound(files.begin(), files.end(), prefix,
                                [](const FileRecord& file, const std::string& value) {
                                    return file.path < value;
@@ -338,14 +397,14 @@ void ForEachFile(const std::string& relDir, bool recursive, const FileVisitor& v
     }
 }
 
-ReadStatus Read(const std::string& relPath, uint64_t offset, uint32_t length,
+ReadStatus Read(Mount mount, const std::string& relPath, uint64_t offset, uint32_t length,
                 std::vector<uint8_t>& destination) {
-    if (!EnsureLoaded()) {
+    if (!EnsureLoaded(mount)) {
         return ReadStatus::MissingFile;
     }
     State& state = S();
     uint32_t fileIndex = 0;
-    const FileRecord* file = FindFile(relPath, &fileIndex);
+    const FileRecord* file = FindFile(mount, relPath, &fileIndex);
     if (!file) {
         return ReadStatus::MissingFile;
     }
@@ -365,8 +424,10 @@ ReadStatus Read(const std::string& relPath, uint64_t offset, uint32_t length,
     const uint64_t firstBlock = offset / kBlockSize;
     const uint64_t lastBlock = (offset + length - 1) / kBlockSize;
     const uint64_t blockCount = lastBlock - firstBlock + 1;
-    const auto keyFor = [fileIndex](uint64_t block) {
-        return (static_cast<uint64_t>(fileIndex) << 32) | block;
+    // Blocks of a <= 4 GiB file fit 16 bits; mount and file index take the rest.
+    const auto keyFor = [mount, fileIndex](uint64_t block) {
+        return (static_cast<uint64_t>(mount) << 62) | (static_cast<uint64_t>(fileIndex) << 16) |
+               block;
     };
 
     // Pointers stay valid until the eviction pass at the end: list splices do not move
@@ -401,8 +462,9 @@ ReadStatus Read(const std::string& relPath, uint64_t offset, uint32_t length,
         const uint32_t requestLength = static_cast<uint32_t>(end - start);
         std::vector<uint8_t> buffer(requestLength);
         ++state.stats.requests;
-        const int32_t received = mkw_dvd_read(file->path.c_str(), static_cast<double>(start),
-                                              requestLength, buffer.data());
+        const int32_t received = mkw_dvd_read(static_cast<int>(mount), file->path.c_str(),
+                                              static_cast<double>(start), requestLength,
+                                              buffer.data());
         if (received < 0) {
             return StatusForFetchError(received, *file, start, requestLength);
         }
@@ -453,8 +515,8 @@ ReadStatus Read(const std::string& relPath, uint64_t offset, uint32_t length,
     return ReadStatus::Ok;
 }
 
-bool ReadWhole(const std::string& relPath, std::vector<uint8_t>& destination) {
-    const std::optional<uint64_t> size = FileSize(relPath);
+bool ReadWhole(Mount mount, const std::string& relPath, std::vector<uint8_t>& destination) {
+    const std::optional<uint64_t> size = FileSize(mount, relPath);
     if (!size || *size > UINT32_MAX) {
         return false;
     }
@@ -462,7 +524,7 @@ bool ReadWhole(const std::string& relPath, std::vector<uint8_t>& destination) {
         destination.clear();
         return true;
     }
-    return Read(relPath, 0, static_cast<uint32_t>(*size), destination) == ReadStatus::Ok;
+    return Read(mount, relPath, 0, static_cast<uint32_t>(*size), destination) == ReadStatus::Ok;
 }
 
 Stats GetStats() {
