@@ -4,15 +4,19 @@
 # functions are compiled once into mkw_base_shared; only callers whose direct
 # ABI differs between profiles receive small base/RR variants.
 
-set(DATA_INIT_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init.cpp")
-set(DATA_INIT_BLOB_ASM "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init_blobs.S")
+# Directory holding the translator's generated/ tree: the workspace root unless overridden (the
+# web smoke test points it at a synthetic translation that lives outside the repository).
+set(MKW_GENERATED_ROOT "${MKW_RUNTIME_SOURCE_DIR}/.." CACHE PATH
+    "Directory containing the translator's generated/ output")
+set(DATA_INIT_FILE "${MKW_GENERATED_ROOT}/generated/data_sections_init.cpp")
+set(DATA_INIT_BLOB_ASM "${MKW_GENERATED_ROOT}/generated/data_sections_init_blobs.S")
 if(EXISTS "${DATA_INIT_FILE}")
     list(APPEND SOURCES "${DATA_INIT_FILE}")
 endif()
 # Crash-report symbolization table emitted by generate-data-init. The stub
 # (deliberately outside the globbed src/ tree so it is never picked up twice)
 # keeps link succeeding when the generated table has not been produced yet.
-set(GUEST_SYMBOL_TABLE_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated/guest_symbol_table.cpp")
+set(GUEST_SYMBOL_TABLE_FILE "${MKW_GENERATED_ROOT}/generated/guest_symbol_table.cpp")
 if(EXISTS "${GUEST_SYMBOL_TABLE_FILE}")
     list(APPEND SOURCES "${GUEST_SYMBOL_TABLE_FILE}")
 else()
@@ -20,7 +24,7 @@ else()
 endif()
 # wasm cannot assemble the .incbin blobs; the translator writes an #embed C++ companion with the
 # same symbols beside every blob .S. Exactly one of the pair may be compiled.
-set(DATA_INIT_BLOB_CPP "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init_blobs.cpp")
+set(DATA_INIT_BLOB_CPP "${MKW_GENERATED_ROOT}/generated/data_sections_init_blobs.cpp")
 if(MKW_PLATFORM_WEB)
     if(EXISTS "${DATA_INIT_BLOB_CPP}")
         set_source_files_properties("${DATA_INIT_BLOB_CPP}" PROPERTIES
@@ -58,6 +62,7 @@ function(mkw_configure_object_target target)
         "${MKW_RUNTIME_SOURCE_DIR}/src"
         # Workspace root, so translator output is spelled "generated/<x>.h"
         # instead of a ../ chain whose depth depends on the includer.
+        "${MKW_GENERATED_ROOT}"
         "${MKW_RUNTIME_SOURCE_DIR}/.."
         "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
     target_compile_definitions(${target} PRIVATE
@@ -259,6 +264,7 @@ function(mkw_configure_product target)
         "${MKW_RUNTIME_SOURCE_DIR}/src"
         # Workspace root, so translator output is spelled "generated/<x>.h"
         # instead of a ../ chain whose depth depends on the includer.
+        "${MKW_GENERATED_ROOT}"
         "${MKW_RUNTIME_SOURCE_DIR}/.."
         "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
     target_compile_definitions(${target} PRIVATE
