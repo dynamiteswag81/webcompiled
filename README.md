@@ -144,6 +144,26 @@ reporting—remain visible.
 > [Releases](https://github.com/patchzyy/Wiicompiled/releases) page. If someone's sharing an
 > installer through Discord or some random download site, don't touch it!!
 
+## Play in the browser (self-hosted, in development)
+
+There's also a WebAssembly + WebGPU build that runs in the browser, aimed at people who want to
+host the game for others: you drop **your own** disc into a folder, your machine translates and
+compiles it once, and you get a static site. Anyone with a recent Chrome or Edge just opens the
+URL and plays. No install, no per-player game files, and saves stay in each player's browser.
+
+```sh
+cp /path/to/your/mkwii.rvz web/game/     # optional: web/game/RetroRewind6/ for Retro Rewind
+docker compose up                        # or: web/host.sh
+```
+
+Then open <http://localhost:8080>. Everything else (other servers, Range requests, HTTPS,
+troubleshooting) is in the [web hosting guide](docs/web-hosting.md).
+
+> [!WARNING]
+> The browser build is still in development and hasn't been run end to end against a real disc yet.
+> The same rules apply as everywhere else here: no game data is in this repo, and nothing
+> pre-translated is distributed. Don't host it publicly for people who don't own the game.
+
 ## A note on related projects
 
 WiiCompiled, Wheel Wizard, Retro rewind and other related projects are developed
@@ -159,6 +179,10 @@ the Kamek/Pulsar code is statically translated together with the base game into 
 executable.
 
 Wheel Wizard drives this too.
+
+The browser build supports it as well: put the `RetroRewind6` folder next to your disc in
+`web/game/` and players get a choice between Mario Kart Wii and Retro Rewind on the start screen.
+Online play (Retro-WFC) isn't available in the browser.
 
 ## Building from source
 
@@ -180,6 +204,9 @@ For everything beyond that, feeding in your own `main.dol`/`StaticR.rel`, runnin
 translation, generating the manifest and build graph, and compiling, see [`translator/README.md`](translator/README.md).
 
 For a step-by-step guide on compiling both WiiCompiled and Retro Rewind from source on macOS (Apple Silicon), see the [macOS Build Guide](docs/building-macos.md).
+
+For the browser build, see the [web hosting guide](docs/web-hosting.md) (operators) and the
+[web port design notes](docs/web-port.md) (contributors).
 
 ## FAQ
 
@@ -207,6 +234,11 @@ audio, input, GX, everything the game touches.
 **The game crashed / stopped with an error.**
 Errors are deliberately loud instead of quietly swallowed. Send a report along with the run log
 from `%LOCALAPPDATA%\WiiCompiled\Logs`.
+
+**Can I play it in a browser?**
+Someone who owns the game can host it: see [Play in the browser](#play-in-the-browser-self-hosted-in-development).
+It needs Chrome/Edge 137+ (WebGPU and WebAssembly JSPI), and there's no online play in the browser.
+The game is still compiled ahead of time; the browser doesn't run an emulator either.
 
 **Will you fix original bugs?**
 Not in the base game, behavior identical to real hardware is the goal. Only report things where this port differs
