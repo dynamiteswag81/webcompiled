@@ -1169,6 +1169,12 @@ void initialize_pipeline_cache() {
   g_pipelineThreadEnd = false;
   g_activeBackgroundPipelineWorkers = 0;
 
+#ifdef __EMSCRIPTEN__
+  // Single-threaded browser build: pipelines compile synchronously on first use, and there is no
+  // on-disk sqlite cache to load from or write to (the browser keeps its own shader cache).
+  g_hasPipelineThread = false;
+  return;
+#endif
   if (webgpu::g_backendType == wgpu::BackendType::OpenGL || webgpu::g_backendType == wgpu::BackendType::OpenGLES ||
       webgpu::g_backendType == wgpu::BackendType::WebGPU) {
     g_hasPipelineThread = false;

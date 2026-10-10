@@ -259,6 +259,11 @@ FrameWorkerState g_frameWorker;
 bool frame_worker_requested() noexcept {
 #ifdef AURORA_ENABLE_GX
   static const bool enabled = [] {
+#if defined(__EMSCRIPTEN__)
+    // The browser build has no threads (no -pthread): frames are prepared, submitted and
+    // presented on the calling thread.
+    return false;
+#endif
 #if defined(__APPLE__)
     // ImGui's SDL backend may raise an SDL window from ImGui::NewFrame(). On
     // macOS that reaches AppKit, whose window operations are main-thread-only;
@@ -1009,7 +1014,13 @@ bool present_presentation_job(const PresentationJob& job) {
           wgpu::Status presentStatus;
           {
             std::lock_guard submitLock(g_queueSubmitMutex);
+#ifdef __EMSCRIPTEN__
+            // The browser presents the canvas's current texture itself once control returns to
+            // the event loop; there is no explicit present.
+            presentStatus = wgpu::Status::Success;
+#else
             presentStatus = g_surface.Present();
+#endif
           }
           presentDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(
               PresentClock::now() - presentStarted);
@@ -1679,11 +1690,11 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
 
 // Phase 3: hand the encoded group to whoever owns presentation.
 void publish_presentations(std::vector<PresentationJob>&& presentationJobs, bool interpolationActive) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
   (void)interpolationActive;
   // Presenting reaches SDL/AppKit, whose window operations must stay on the
   // main thread. Interpolation normally starts the presenter worker, so keep
-  // its jobs synchronous on Apple platforms.
+  // its jobs synchronous on Apple platforms. The browser build has no threads.
   for (const auto& job : presentationJobs) {
     present_presentation_job(job);
   }

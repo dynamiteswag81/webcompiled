@@ -132,6 +132,11 @@ constexpr size_t FrameSlotCount = 3;
 static std::array<wgpu::Buffer, FrameSlotCount> g_stagingBuffers;
 static size_t currentStagingBuffer = 0;
 static StagingMapState s_mappingState;
+#ifdef __EMSCRIPTEN__
+// The pending staging map. In the browser the map resolves on the JS event loop, which never runs
+// while the frame loop spins, so begin_frame suspends on this future (JSPI) instead.
+static wgpu::Future s_stagingMapFuture{};
+#endif
 static wgpu::Limits g_cachedLimits;
 // Advanced once per logical frame in the seal prologue, under the renderer GPU mutex and with the
 // producer blocked, so every later reader sees a value that no longer moves.
@@ -1034,6 +1039,9 @@ void map_staging_buffer() {
     return;
   }
 
+#ifdef __EMSCRIPTEN__
+  s_stagingMapFuture =
+#endif
   g_stagingBuffers[currentStagingBuffer].MapAsync(
       wgpu::MapMode::Write, 0, StagingBufferSize, wgpu::CallbackMode::AllowSpontaneous,
       [generation](wgpu::MapAsyncStatus status, wgpu::StringView message) {
@@ -1070,9 +1078,15 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
         ++s_beginFrameMapFailCount;
         return false;
       }
+#ifdef __EMSCRIPTEN__
+      // Bounded so a lost device is still noticed; the loop re-checks the state either way.
+      g_instance.WaitAny(s_stagingMapFuture, 1000000000);
+      webgpu::fail_if_device_lost();
+#else
       g_instance.ProcessEvents();
       webgpu::fail_if_device_lost();
       s_mappingState.wait_for_progress();
+#endif
     }
   }
   ++g_stagingEpoch;

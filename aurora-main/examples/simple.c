@@ -8,6 +8,16 @@
 #include <string.h>
 #include <stdlib.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+// Suspends (JSPI) until the browser's next animation frame: the canvas is presented and input is
+// delivered while the loop is parked, and the loop runs at the display's refresh rate.
+EM_ASYNC_JS(void, wait_for_animation_frame, (), {
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+});
+#endif
+
 static void log_callback(AuroraLogLevel level, const char* module, const char* message, unsigned int len) {
   const char* levelStr;
   FILE* out = stdout;
@@ -79,10 +89,16 @@ int main(int argc, char* argv[]) {
       ++event;
     }
     if (exiting || paused || !aurora_begin_frame()) {
+#ifdef __EMSCRIPTEN__
+      wait_for_animation_frame();
+#endif
       continue;
     }
     draw();
     aurora_end_frame();
+#ifdef __EMSCRIPTEN__
+    wait_for_animation_frame();
+#endif
   }
 
   aurora_shutdown();

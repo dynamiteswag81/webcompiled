@@ -729,6 +729,11 @@ void set_frame_interpolation_fps(uint32_t targetFps) noexcept {
   if (targetFps != 120 && targetFps != 180 && targetFps != 240) {
     targetFps = 0;
   }
+#ifdef __EMSCRIPTEN__
+  // Interpolation paces presents against a wall-clock schedule and fans work out to helper
+  // threads; the single-threaded browser build presents each frame as it is produced.
+  targetFps = 0;
+#endif
   detail::g_frameInterpolationFps.store(targetFps, std::memory_order_release);
   // Start at the configured quality; the controller only ever backs off from here.
   s_interpolationSampleTarget.store(targetFps == 0 ? 0u : std::min(targetFps / 60 - 1, MaxInterpolatedFrames),

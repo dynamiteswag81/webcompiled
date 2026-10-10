@@ -203,8 +203,8 @@ std::optional<ConvertedTexture> parse_dds_bytes(ArrayRef<uint8_t> bytes) noexcep
     return std::nullopt;
   }
 
-  ByteBuffer data{expectedSize};
-  std::memcpy(data.data(), bytes.data() + parsedLayout->dataOffset, expectedSize);
+  ByteBuffer data{static_cast<size_t>(expectedSize)};
+  std::memcpy(data.data(), bytes.data() + parsedLayout->dataOffset, static_cast<size_t>(expectedSize));
   return ConvertedTexture{
       .format = parsedLayout->format,
       .width = header->width,

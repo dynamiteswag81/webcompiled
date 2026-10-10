@@ -22,7 +22,7 @@
 #include "../window.hpp"
 #include "../dolphin/vi/vi_internal.hpp"
 
-#if defined(WEBGPU_DAWN) && !defined(__MINGW32__)
+#if defined(WEBGPU_DAWN) && !defined(__MINGW32__) && !defined(__EMSCRIPTEN__)
 #include "../dawn/BackendBinding.hpp"
 #include <dawn/native/DawnNative.h>
 #elif defined(WEBGPU_DAWN)
@@ -136,6 +136,10 @@ wgpu::PresentMode best_present_mode() {
   if (g_backendType != wgpu::BackendType::Metal && supports(wgpu::PresentMode::Mailbox)) {
     return wgpu::PresentMode::Mailbox;
   }
+#ifdef __EMSCRIPTEN__
+  // A canvas only offers Fifo: the browser composites it with the page on its own refresh.
+  return wgpu::PresentMode::Fifo;
+#endif
   // Mailbox is preferred over Fifo because Fifo caps presentation at the refresh rate and every slot
   // deadline after the first is missed. Reaching this means neither is offered, so say so loudly.
   Log.warn("Surface supports neither Immediate nor Mailbox; falling back to Fifo. Presentation "
@@ -528,7 +532,7 @@ bool initialize(AuroraBackend auroraBackend) {
         .requiredFeatureCount = requiredInstanceFeatures.size(),
         .requiredFeatures = requiredInstanceFeatures.data(),
     };
-#if defined(WEBGPU_DAWN) && !defined(__MINGW32__)
+#if defined(WEBGPU_DAWN) && !defined(__MINGW32__) && !defined(__EMSCRIPTEN__)
     // DawnNative.h's C++ constructor has an MSVC ABI that cannot cross into llvm-mingw, and the
     // descriptor only restates Dawn's defaults, so use the public WebGPU descriptor here.
     dawn::native::DawnInstanceDescriptor dawnInstanceDescriptor;
@@ -560,7 +564,12 @@ bool initialize(AuroraBackend auroraBackend) {
   {
     const wgpu::RequestAdapterOptions options{
         .powerPreference = wgpu::PowerPreference::HighPerformance,
+#ifdef __EMSCRIPTEN__
+        // The browser picks the native API; requestAdapter() takes no backend.
+        .backendType = wgpu::BackendType::Undefined,
+#else
         .backendType = backend,
+#endif
         .compatibleSurface = g_surface,
     };
     const auto future = g_instance.RequestAdapter(
@@ -642,6 +651,7 @@ bool initialize(AuroraBackend auroraBackend) {
         requiredLimits.maxDynamicStorageBuffersPerPipelineLayout, requiredLimits.maxStorageBuffersPerShaderStage,
         requiredLimits.minUniformBufferOffsetAlignment, requiredLimits.minStorageBufferOffsetAlignment);
     std::vector<wgpu::FeatureName> requiredFeatures;
+#ifndef __EMSCRIPTEN__
     // Optional native sharing for MetalFX. Devices without either feature keep
     // the normal renderer; the upscaler checks the enabled pair at runtime.
     if (backend == wgpu::BackendType::Metal &&
@@ -650,6 +660,7 @@ bool initialize(AuroraBackend auroraBackend) {
       requiredFeatures.push_back(wgpu::FeatureName::SharedTextureMemoryIOSurface);
       requiredFeatures.push_back(wgpu::FeatureName::SharedFenceMTLSharedEvent);
     }
+#endif
     bool implicitDeviceSynchronizationSupported = false;
     wgpu::SupportedFeatures supportedFeatures;
     g_adapter.GetFeatures(&supportedFeatures);
@@ -659,19 +670,27 @@ bool initialize(AuroraBackend auroraBackend) {
         g_bcTexturesSupported = true;
         requiredFeatures.push_back(feature);
       }
+#ifndef __EMSCRIPTEN__
       // The presenter calls device and queue methods while the frame worker encodes, which Dawn only
       // supports with this feature; without it the two race inside the device's dynamic uploader.
       if (feature == wgpu::FeatureName::ImplicitDeviceSynchronization) {
         implicitDeviceSynchronizationSupported = true;
         requiredFeatures.push_back(feature);
       }
+#endif
     }
+#ifdef __EMSCRIPTEN__
+    // The browser build is single-threaded: no presenter or frame worker shares the device.
+    (void)implicitDeviceSynchronizationSupported;
+#else
     if (!implicitDeviceSynchronizationSupported) {
       Log.warn(
           "Adapter does not support ImplicitDeviceSynchronization; multi-threaded presentation is "
           "not safe on this device.");
     }
-#ifdef WEBGPU_DAWN
+#endif
+    // Dawn-native device extensions. The browser has no toggles and no blob cache.
+#if defined(WEBGPU_DAWN) && !defined(__EMSCRIPTEN__)
     wgpu::DawnCacheDeviceDescriptor cacheDescriptor({
         .isolationKey = nullptr,
         .loadDataFunction = load_from_cache,
@@ -708,7 +727,7 @@ bool initialize(AuroraBackend auroraBackend) {
     });
 #endif
     wgpu::DeviceDescriptor deviceDescriptor;
-#ifdef WEBGPU_DAWN
+#if defined(WEBGPU_DAWN) && !defined(__EMSCRIPTEN__)
     deviceDescriptor.nextInChain = &togglesDescriptor;
 #endif
     deviceDescriptor.requiredFeatureCount = requiredFeatures.size();
@@ -764,6 +783,7 @@ bool initialize(AuroraBackend auroraBackend) {
     if (!g_device) {
       return false;
     }
+#ifndef __EMSCRIPTEN__
     g_device.SetLoggingCallback([](wgpu::LoggingType type, wgpu::StringView message) {
       AuroraLogLevel level = LOG_FATAL;
       switch (type) {
@@ -784,6 +804,7 @@ bool initialize(AuroraBackend auroraBackend) {
       }
       Log.report(level, "WebGPU message: {}", message);
     });
+#endif
   }
   g_queue = g_device.GetQueue();
 

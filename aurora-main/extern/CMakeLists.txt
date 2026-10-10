@@ -3,7 +3,7 @@ include(FetchContent)
 # Don't build tests for third party dependencies
 set(BUILD_TESTING OFF CACHE INTERNAL "Build tests")
 set(SKIP_INSTALL_ALL ON)
-if (NOT DEFINED BUILD_SHARED_LIBS)
+if (NOT DEFINED BUILD_SHARED_LIBS AND NOT EMSCRIPTEN)
   set(_USE_SHARED ON)
 else ()
   set(_USE_SHARED OFF)
@@ -141,7 +141,7 @@ endif ()
 
 # fmt 11.1 drops its libc++ transitive includes but still calls malloc/free without <cstdlib>.
 # Force the missing header for fmt and its consumers until the pinned release is updated.
-if (MINGW AND TARGET fmt)
+if ((MINGW OR EMSCRIPTEN) AND TARGET fmt)
   target_compile_options(fmt PUBLIC
     $<$<COMPILE_LANGUAGE:CXX>:-include>
     $<$<COMPILE_LANGUAGE:CXX>:cstdlib>)
@@ -255,12 +255,22 @@ if (AURORA_ENABLE_GX)
     )
     target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR})
 
+    if (EMSCRIPTEN)
+      # See lib/imgui_impl_wgpu_web.cpp: build the backend's Dawn path against emdawnwebgpu.
+      set(_aurora_imgui_wgpu_source ${PROJECT_SOURCE_DIR}/lib/imgui_impl_wgpu_web.cpp)
+    else ()
+      set(_aurora_imgui_wgpu_source ${imgui_SOURCE_DIR}/backends/imgui_impl_wgpu.cpp)
+    endif ()
     add_library(imgui_backends STATIC
       ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
       ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp
-      ${imgui_SOURCE_DIR}/backends/imgui_impl_wgpu.cpp
+      ${_aurora_imgui_wgpu_source}
     )
-    target_compile_definitions(imgui_backends PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    if (EMSCRIPTEN)
+      target_include_directories(imgui_backends PRIVATE ${imgui_SOURCE_DIR})
+    else ()
+      target_compile_definitions(imgui_backends PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    endif ()
     target_link_libraries(imgui_backends PRIVATE imgui ${AURORA_SDL3_TARGET} dawn::webgpu_dawn)
     target_link_libraries(imgui PUBLIC imgui_backends)
 
@@ -303,6 +313,9 @@ if (AURORA_ENABLE_GX)
       set(ZSTD_BUILD_SHARED OFF)
       set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "BUILD PROGRAMS" FORCE)
       set(ZSTD_BUILD_TESTS OFF CACHE BOOL "BUILD TESTS" FORCE)
+      if (EMSCRIPTEN)
+        set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "MULTITHREADING SUPPORT" FORCE)
+      endif ()
 
       if (WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set(C_FLAG_WALL TRUE CACHE INTERNAL "")

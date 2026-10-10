@@ -8,6 +8,16 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+if (EMSCRIPTEN)
+  # Browser build (emcmake). Every object linked into the final module, aurora's
+  # dependencies included, must use native wasm exceptions and longjmp: the JS-based
+  # invoke_* trampolines would put JS frames on the stack between a JSPI promising
+  # export and a suspend point, which traps. No -pthread and no Asyncify.
+  set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
+  add_compile_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+  add_link_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+endif ()
+
 option(AURORA_ENABLE_GX "Enable GX implementation and WebGPU renderer" ON)
 option(AURORA_ENABLE_DVD "Enable DVD implementation backed by nod" OFF)  # TODO: need to fix tests
 option(AURORA_ENABLE_CARD "Enable CARD implementation based on kabufuda" ON)
