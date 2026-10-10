@@ -59,6 +59,10 @@ std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
         }
         buffer.resize(buffer.size() * 2);
     }
+#elif defined(__EMSCRIPTEN__)
+    // The product link embeds the files that sit beside a native executable (dsp_coef.bin,
+    // wii_bootstrap/) at this in-memory path.
+    return std::filesystem::path("/app");
 #else
     return std::nullopt;
 #endif
@@ -78,6 +82,11 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
     }
     if (const passwd* user = getpwuid(getuid()); user && user->pw_dir && *user->pw_dir) {
         return std::filesystem::path(user->pw_dir) / "Library" / "Application Support" / applicationName;
+    }
+#elif defined(__EMSCRIPTEN__)
+    // $HOME (/home/web_user) is persisted per client in IndexedDB by the page.
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        return std::filesystem::path(home) / applicationName;
     }
 #endif
     return std::filesystem::current_path() / applicationName;

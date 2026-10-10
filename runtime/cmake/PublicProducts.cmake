@@ -18,7 +18,19 @@ if(EXISTS "${GUEST_SYMBOL_TABLE_FILE}")
 else()
     list(APPEND SOURCES "${MKW_RUNTIME_SOURCE_DIR}/cmake/guest_symbol_table_stub.cpp")
 endif()
-if(EXISTS "${DATA_INIT_BLOB_ASM}")
+# wasm cannot assemble the .incbin blobs; the translator writes an #embed C++ companion with the
+# same symbols beside every blob .S. Exactly one of the pair may be compiled.
+set(DATA_INIT_BLOB_CPP "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init_blobs.cpp")
+if(MKW_PLATFORM_WEB)
+    if(EXISTS "${DATA_INIT_BLOB_CPP}")
+        set_source_files_properties("${DATA_INIT_BLOB_CPP}" PROPERTIES
+            SKIP_UNITY_BUILD_INCLUSION ON SKIP_PRECOMPILE_HEADERS ON)
+        list(APPEND SOURCES "${DATA_INIT_BLOB_CPP}")
+    elseif(EXISTS "${DATA_INIT_BLOB_ASM}")
+        message(FATAL_ERROR "${DATA_INIT_BLOB_ASM} has no ${DATA_INIT_BLOB_CPP} companion; "
+            "re-run the translator's generate-data-init")
+    endif()
+elseif(EXISTS "${DATA_INIT_BLOB_ASM}")
     enable_language(ASM)
     set_source_files_properties("${DATA_INIT_BLOB_ASM}" PROPERTIES LANGUAGE ASM SKIP_UNITY_BUILD_INCLUSION ON)
     list(APPEND SOURCES "${DATA_INIT_BLOB_ASM}")
@@ -170,6 +182,18 @@ if(MKW_HAVE_RETRO_REWIND)
         target_precompile_headers(mkw_retro_sensitive REUSE_FROM mkw_base_shared)
     endif()
 
+    if(MKW_PLATFORM_WEB)
+        # Same .S -> #embed companion swap as the base data blobs above.
+        set(_mkw_retro_web_sources)
+        foreach(source IN LISTS MKW_RETRO_EXTRA_SOURCES)
+            if(source MATCHES "\\.S$")
+                string(REGEX REPLACE "\\.S$" ".cpp" source "${source}")
+                set_source_files_properties("${source}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+            endif()
+            list(APPEND _mkw_retro_web_sources "${source}")
+        endforeach()
+        set(MKW_RETRO_EXTRA_SOURCES ${_mkw_retro_web_sources})
+    endif()
     set(MKW_RETRO_TRANSLATED_SOURCES ${MKW_RETRO_MOD_SHARDS} ${MKW_RETRO_EXTRA_SOURCES})
     set(MKW_RETRO_BLOB_OBJECTS)
     foreach(source IN LISTS MKW_RETRO_EXTRA_SOURCES)
@@ -182,6 +206,46 @@ if(MKW_HAVE_RETRO_REWIND)
     mkw_configure_translated_target(mkw_retro_rewind_functions)
     target_precompile_headers(mkw_retro_rewind_functions REUSE_FROM mkw_base_shared)
 endif()
+
+# Browser product: a JSPI module (WiiCompiled.js + .wasm) for the page in web/site. The files a
+# native build copies beside the executable are embedded at /app (RuntimePlatform::
+# ExecutableDirectory() on the web). The aurora sqlite pipeline cache is off in the browser and
+# networking is compiled out, so neither the initial pipeline cache nor cacert.pem ships.
+function(mkw_configure_web_product target)
+    set(web_dir "${MKW_RUNTIME_SOURCE_DIR}/../web")
+    set(dsp_rom "${MKW_RUNTIME_SOURCE_DIR}/assets/dsp/dsp_coef.bin")
+    set(bootstrap "${MKW_RUNTIME_SOURCE_DIR}/assets/wii")
+    if(NOT EXISTS "${dsp_rom}" OR NOT EXISTS "${bootstrap}/shared2/wc24")
+        message(FATAL_ERROR "Missing bundled runtime assets under ${MKW_RUNTIME_SOURCE_DIR}/assets")
+    endif()
+    file(GLOB js_libraries CONFIGURE_DEPENDS "${web_dir}/js/*.js")
+    set_target_properties(${target} PROPERTIES SUFFIX ".js")
+    target_link_options(${target} PRIVATE
+        -sJSPI
+        "-sJSPI_EXPORTS=main,mkw_host_context_entry"
+        -sENVIRONMENT=web
+        -sALLOW_MEMORY_GROWTH=1
+        -sMAXIMUM_MEMORY=4GB
+        # The main stack hosts the scheduler; guest threads own their own shadow stacks.
+        -sSTACK_SIZE=8MB
+        -sEXPORTED_RUNTIME_METHODS=FS,ENV
+        -lidbfs.js
+        "--embed-file=${dsp_rom}@/app/dsp_coef.bin"
+        "--embed-file=${bootstrap}@/app/wii_bootstrap")
+    foreach(library IN LISTS js_libraries)
+        target_link_options(${target} PRIVATE "--js-library=${library}")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${library}")
+    endforeach()
+    # For web/build.sh: the site assembly copies these next to index.html.
+    if(MKW_PLATFORM_WEB_DIST)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${MKW_PLATFORM_WEB_DIST}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE_DIR:${target}>/${target}.js"
+                "$<TARGET_FILE_DIR:${target}>/${target}.wasm"
+                "${MKW_PLATFORM_WEB_DIST}")
+    endif()
+endfunction()
 
 function(mkw_configure_product target)
     target_sources(${target} PRIVATE $<TARGET_OBJECTS:mkw_runtime_common>)
@@ -264,6 +328,11 @@ function(mkw_configure_product target)
         endforeach()
     endif()
 
+    if(MKW_PLATFORM_WEB)
+        mkw_configure_web_product(${target})
+        return()
+    endif()
+
     set(MKW_WII_BOOTSTRAP_SOURCE_DIR "${MKW_RUNTIME_SOURCE_DIR}/assets/wii")
     if(NOT EXISTS "${MKW_WII_BOOTSTRAP_SOURCE_DIR}/shared2/wc24")
         message(FATAL_ERROR "Missing Wii first-run bootstrap payload: ${MKW_WII_BOOTSTRAP_SOURCE_DIR}")
@@ -342,6 +411,8 @@ endif()
 # target-specific performance on the table.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
     set(MKW_BASELINE_ARCH_FLAG -march=x86-64-${MKW_X86_CPU_PROFILE})
+elseif(MKW_PLATFORM_WEB)
+    set(MKW_BASELINE_ARCH_FLAG ${MKW_WEB_SIMD_FLAGS})
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(MKW_BASELINE_ARCH_FLAG -mcpu=native)
 else()
