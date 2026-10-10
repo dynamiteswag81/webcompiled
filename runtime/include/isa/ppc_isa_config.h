@@ -4,8 +4,12 @@
 #include <cstdint>
 
 #define MKW_RESTRICT __restrict
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__EMSCRIPTEN__)
+// WebAssembly builds reuse the x86 SIMD formulations through Emscripten's SSE/AVX2 -> wasm
+// SIMD128 compatibility headers (built with -msimd128 -msse4.2 -mavx2, deliberately without
+// -mfma so fused multiply-adds take the correctly rounded scalar path).
 #include <immintrin.h>
+#define MKW_HOST_X86_SIMD 1
 #elif defined(__aarch64__)
 #include <arm_neon.h>
 #else

@@ -108,41 +108,92 @@ JSPI does not need `SharedArrayBuffer`, so no COOP/COEP is strictly required.
 `web/serve.py` serves `web/dist` plus the user's extracted `DATA/` with Range
 support on `http://localhost:8080`.
 
-## Division of labor
+## Deployment target (product spec)
 
-Two workers run in parallel. Ownership is by directory, so branches merge without conflicts.
+The repo never contains game data. The deliverable is a pipeline where an
+**operator** supplies their own PAL `RMCP01` dump (ISO/RVZ/WBFS/...) and runs
+one command (`web/build.ps1` / `web/build.sh`) that extracts, translates,
+compiles to wasm and writes a **self-contained static site** (`web/dist/`):
+`index.html`, `.js`, `.wasm`, and the extracted disc tree. Any static web
+server that supports HTTP `Range` (nginx, Caddy, GitHub-Pages-style hosts,
+the bundled `web/serve.py` for local use) can host it, and **clients just open
+the URL and play**: no install, no per-client game file.
 
-| | **Local session** (has the game dump) | **Cloud session** (no game data) |
-| --- | --- | --- |
-| Branch | `web-port` | `web-aurora` (merged into `web-port` by the local session) |
-| Owns | `runtime/`, `web/`, `translator/`, `projects/`, root CMake, this doc | `aurora-main/` only |
-| Work plan items | 1, 3, 4, 5, 6, 7, 8, 9, 10 | 2 (+ aurora-side parts of 10) |
-| Verifies with | the real game in Chrome | aurora's own example in Chrome |
+Consequences:
+* No `SharedArrayBuffer`/COOP/COEP requirement (JSPI, single-threaded), so it
+  works on plain static hosting.
+* Disc reads stream lazily over HTTP Range from the hosted extracted tree (with
+  an in-memory cache), so first load is not a multi-GB download. A build-time
+  `disc-manifest.json` (path → size) replaces directory scans.
+* Saves/config live per client in IndexedDB (IDBFS).
+* Optional later: a "bring your own disc" mode where the client picks a local
+  image/folder (File System Access API) when the operator hosts no data.
 
-### Contract for the aurora port (cloud)
-So the runtime can link the result without rework:
+## Ownership
 
-* Build with `emcmake cmake -G Ninja` and switch everything on `EMSCRIPTEN` inside
-  `aurora-main/` CMake. Don't add new required cache variables.
-* Keep the existing target names: `aurora::core`, `aurora::gx`, `aurora::pad`,
-  `aurora::si`, `aurora::vi`, `aurora::mtx`, plus whatever `aurora::main` needs.
-* Compile flags must match the final product: `-fwasm-exceptions`,
-  `-sSUPPORT_LONGJMP=wasm`. Link the test page with `-sJSPI`.
-  Do **not** use `-pthread` or Asyncify.
-* WebGPU via `--use-port=emdawnwebgpu`. Async waits (adapter/device request,
-  `MapAsync` readbacks in `efb_ram_copy.cpp` / `depth_peek.cpp`) should block
-  through `wgpu::Instance::WaitAny` (works under JSPI), not spin.
-* Single-threaded: frame worker, presenter, pipeline workers, pipeline cache
-  writer and frame-interpolation workers all off/inline under `__EMSCRIPTEN__`.
-  Pipelines compile synchronously. Disable the sqlite pipeline cache and
-  Dawn blob cache on the web.
-* Surface from the `#canvas` selector; size follows the canvas CSS size ×
-  `devicePixelRatio`.
-* No aurora function that may suspend (anything calling `WaitAny`) may run
-  from a JS callback (`emscripten_set_*_callback`, SDL event watch). Only
-  from the main call stack.
-* Write a short "aurora web notes" section at the end of this doc: what was
-  stubbed, known gaps, and the exact flags used.
+The cloud session owns all remaining work (it has no game data, so it cannot
+run the translator or link the final product, but it can build and test
+everything else). The local session (with the user's dump) is recalled later
+only to run the full pipeline end to end and debug against the real game.
+
+## Status (handover from the local session)
+
+Verified locally with the real dump (outputs are gitignored, not in the repo):
+* Translator on the clean PAL dump: 29,637 functions in ~30 s;
+  `emit-base-manifest`, `generate-data-init`, `emit-build-shards` all succeed
+  → 72 `base_common` shards + dispatch + 16 registration TUs (~427 MB C++).
+* One translated shard compiles with em++ 6.0.12 in ~14 s (1.8 MB object) using:
+  `-std=c++17 -O2 -fno-fast-math -ffp-contract=off -fno-slp-vectorize -w
+  -fwasm-exceptions -msimd128 -msse4.2 -mavx2 -DTARGET_PC
+  -Iruntime/include -Iruntime/src -I<repo root> -Iaurora-main/include`.
+* **JSPI HostContext backend works**: `web/tests/host_context_test.cpp`
+  (3 contexts ping-ponging, separate shadow stacks, 2000-deep recursion, C++
+  exceptions, `mkw_host_yield`) prints `PASS` under Node 24. Build:
+  `em++ -std=c++20 -O2 -fwasm-exceptions -sJSPI
+  -sJSPI_EXPORTS=main,mkw_host_context_entry --js-library
+  web/js/library_mkw_host.js -Iruntime/include web/tests/host_context_test.cpp
+  runtime/src/host_context.cpp -o test.js && node test.js`.
+
+Done in this branch:
+* `ppc_isa_config.h`: wasm reuses the x86 SIMD formulations via Emscripten's
+  SSE/AVX2 compat headers (`MKW_HOST_X86_SIMD`); **no `-mfma`** on purpose
+  (Emscripten's `_mm_fmadd_ps` would be an unfused mul+add; without `__FMA__`
+  the code takes its correctly-rounded scalar `fmaf` path).
+* `ppc_isa_fpenv.h`: software FP-control word on wasm (no FTZ/DAZ hardware;
+  explicit NI flush points still honored).
+* `guest_flat_memory.h` / `memory_access.h` / `ppc_isa_quantized.h`: no flat
+  base on wasm; `RequiresCheckedAccess()` is constexpr true; `ResolveRangeHost`
+  and the psq fast paths resolve through the 1 MiB page-bias tables;
+  `FlatWriteRam*` use the writable-bias fast path.
+* `host_context.cpp`: `__EMSCRIPTEN__` JSPI backend + `web/js/library_mkw_host.js`
+  (`mkw_host_context_switch`, `mkw_host_yield`).
+
+Known remaining compile errors from `em++ -fsyntax-only` over `runtime/src`:
+* SDL3 headers (`SDL3/SDL_events.h`, `SDL_gamepad.h`, `SDL_audio.h`): come with
+  aurora's SDL3 once aurora builds for Emscripten (or `--use-port=sdl3` meanwhile).
+* `runtime_config.h` `IsSupportedGraphicsApi`: no `values` table for
+  Emscripten (it defines neither `__linux__` nor `_WIN32`); add `{"auto"}`.
+  Same check for main.cpp's `kGraphicsBackends`.
+* `discord_presence.cpp` (`timeval`), `network_ssl.cpp` (mbedtls),
+  `music_attenuation.cpp`: compile out on the web.
+* `guest_flat_memory.cpp`: exclude; add `guest_flat_memory_wasm.cpp`
+  (malloc-backed stores, modelled on `guest_flat_memory_macos.cpp`).
+* `generated/data_sections_init_blobs.S` is COFF asm with `.incbin`; on wasm
+  emit/convert it to C with `#embed` (or a generated byte array).
+
+Notes for the remaining runtime work:
+* Paths: under Emscripten the generic POSIX branches apply (`$HOME` =
+  `/home/web_user`); mount IDBFS there for config/NAND persistence.
+* Sleeps: `SleepPreciselyUntil`/`PaceToRetraceBoundary` (hle/vi.cpp),
+  `sleep_for` in gx_frame.cpp/os_init.cpp/os_reset.cpp must call
+  `mkw_host_yield` (libc `nanosleep` busy-waits on the main thread). Force a
+  yield after every `aurora_end_frame()` so the canvas presents.
+* DVD: all reads go through `DvdReadContract::ReadExact` (hle/dvd_contract.h)
+  plus `fs::` scans in dvd.cpp → web backend over the manifest + Range fetch.
+* Host threads to make inline/off: AX mix worker (ax_mix.cpp), network
+  deferred worker, main.cpp transcript pipes/threads, music attenuation.
+* Watch V8 limits: per-function body size/locals in huge translated
+  functions, and JSPI secondary-stack depth for deep guest call chains.
 
 ## Work plan
 

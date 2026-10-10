@@ -15,7 +15,12 @@ namespace GuestFlat {
 // of a global.
 inline constexpr uint64_t kGuestSpaceSize = 0x1'0000'0000ull;
 inline constexpr size_t kGuestPageSize = 0x1000;
-#if defined(__x86_64__)
+#if defined(__EMSCRIPTEN__)
+// WebAssembly: no fixed host placement and no page protection. There is no flat
+// base at all; every guest access goes through the checked page-table path
+// (RequiresCheckedAccess() is a compile-time true below), and MKW_FLAT_GUEST_BASE
+// is never expanded (memory_access.h routes FlatLoad/FlatStore elsewhere).
+#elif defined(__x86_64__)
 // 16 TiB: clear of the Windows ASan shadow (32 TiB) and of the usual image/heap
 // placement.
 inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'1000'0000'0000ull;
@@ -40,7 +45,9 @@ inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0010'0000'0000ull;
 #error "guest_flat_memory.h has no fixed flat guest base chosen for this architecture"
 #endif
 
+#if !defined(__EMSCRIPTEN__)
 #define MKW_FLAT_GUEST_BASE (reinterpret_cast<uint8_t*>(GuestFlat::kFixedFlatGuestBase))
+#endif
 
 enum class Backing {
     Owned,
@@ -77,7 +84,9 @@ bool IsActive();
 #define MKW_GUEST_FLAT_FIXED_PAGE_SIZE 1
 #endif
 
-#if defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
+#if defined(__EMSCRIPTEN__)
+inline constexpr bool RequiresCheckedAccess() noexcept { return true; }
+#elif defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
 inline constexpr bool RequiresCheckedAccess() noexcept { return false; }
 #else
 extern bool g_requiresCheckedAccess;

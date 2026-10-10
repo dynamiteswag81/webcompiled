@@ -21,6 +21,13 @@ inline constexpr uint32_t kMkwFpControlFlushToZeroBits = (1u << 15) | (1u << 6);
 // inputs and outputs - actually a cleaner match to the "flush everything" trade above than x86's
 // two-bit combo, not an extra deviation.
 inline constexpr uint32_t kMkwFpControlFlushToZeroBits = (1u << 24); // FZ
+#elif defined(__EMSCRIPTEN__)
+// WebAssembly has no FP control register: arithmetic is always IEEE with denormals. The
+// "register" is a software word so the NI mirror below keeps its exact bookkeeping; the
+// explicit flush points (double->single conversion, lane moves) still honor NI, only the
+// implicit FTZ/DAZ of arithmetic results is lost (same deviation class as noted above).
+inline constexpr uint32_t kMkwFpControlFlushToZeroBits = (1u << 15) | (1u << 6);
+inline thread_local uint32_t g_mkwSoftFpControl = 0x1F80u;
 #else
 #error "ppc_isa_fpenv.h has no host FP control register mapping for this architecture"
 #endif
@@ -38,7 +45,9 @@ inline thread_local double g_mkwNiFlushThreshold = 0.0;
 // their own per-arch branch.
 inline uint32_t MkwGetHostFpControl() noexcept
 {
-#if defined(__x86_64__)
+#if defined(__EMSCRIPTEN__)
+    return g_mkwSoftFpControl;
+#elif defined(__x86_64__)
     return _mm_getcsr();
 #elif defined(__aarch64__)
     uint64_t fpcr = 0;
@@ -49,7 +58,9 @@ inline uint32_t MkwGetHostFpControl() noexcept
 
 inline void MkwSetHostFpControl(uint32_t value) noexcept
 {
-#if defined(__x86_64__)
+#if defined(__EMSCRIPTEN__)
+    g_mkwSoftFpControl = value;
+#elif defined(__x86_64__)
     _mm_setcsr(value);
 #elif defined(__aarch64__)
     // Read-modify-write the full 64-bit FPCR: only the low 32 bits are architecturally defined

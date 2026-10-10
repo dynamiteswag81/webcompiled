@@ -231,6 +231,30 @@ MKW_MEMORY_FORCE_INLINE uint8_t* ResolveRangeHost(uint32_t base, int32_t minOffs
     (void)needsRead;
     const uint32_t guestStart = base + static_cast<uint32_t>(minOffset);
     if (length == 0 || length > kPageSize || guestStart > UINT32_MAX - (length - 1)) return nullptr;
+#if defined(__EMSCRIPTEN__)
+    // No flat view: resolve through the 1 MiB page-bias tables instead. A hit needs both
+    // endpoints to share one bias (same page, or physically contiguous pages), and the
+    // bias tables already exclude deferred-read pages (readable) and executable pages
+    // (writable). Writes into the MMIO window never have a writable bias. Anything else
+    // resolves null and takes the checked Memory::* fallback, exactly like the
+    // RequiresCheckedAccess() configuration below.
+    {
+        const uint32_t guestEnd = guestStart + (length - 1);
+        const uint32_t firstPage = guestStart >> kPageShift;
+        const uint32_t lastPage = guestEnd >> kPageShift;
+        uintptr_t bias = 0;
+        if (needsWrite) {
+            bias = g_fullWritablePageBias[firstPage];
+            if (bias == 0 || g_fullWritablePageBias[lastPage] != bias) return nullptr;
+            if (needsRead && (g_fullReadablePageBias[firstPage] != bias ||
+                              g_fullReadablePageBias[lastPage] != bias)) return nullptr;
+        } else {
+            bias = g_fullReadablePageBias[firstPage];
+            if (bias == 0 || g_fullReadablePageBias[lastPage] != bias) return nullptr;
+        }
+        return reinterpret_cast<uint8_t*>((bias - 1u) + guestStart);
+    }
+#endif
     if (GuestFlat::RequiresCheckedAccess()) {
         // A host page can cover multiple independently-special Wii pages.
         // Returning null keeps resolved accesses on the checked Memory::*
@@ -238,10 +262,12 @@ MKW_MEMORY_FORCE_INLINE uint8_t* ResolveRangeHost(uint32_t base, int32_t minOffs
         (void)needsWrite;
         return nullptr;
     }
+#if !defined(__EMSCRIPTEN__)
     if (needsWrite &&
         (FlatWriteNeedsPolicy(guestStart) || FlatWriteNeedsPolicy(guestStart + (length - 1))))
         [[unlikely]] return nullptr;
     return MKW_FLAT_GUEST_BASE + guestStart;
+#endif
 }
 
 // Guest-address byte order. Distinct from isa/big_endian.h, which is the
@@ -537,6 +563,27 @@ MKW_MEMORY_FORCE_INLINE void WriteResolvedFloat64(uint8_t* r, uint32_t o, uint32
 // FlatWriteRam* remains direct because the translator emits it only for
 // addresses it has proven are ordinary RAM.
 
+#if defined(__EMSCRIPTEN__)
+// No flat view on WebAssembly. FlatLoad is only reachable when RequiresCheckedAccess() is
+// false (never here); FlatStore backs the translator-proven RAM stores, which keep their
+// page-table fast path with the checked store as the fallback.
+template <typename T>
+MKW_MEMORY_FORCE_INLINE T FlatLoad(uint32_t address) {
+    if constexpr (sizeof(T) == 1) return static_cast<T>(Memory::Read8(address));
+    else if constexpr (sizeof(T) == 2) return static_cast<T>(Memory::Read16(address));
+    else if constexpr (sizeof(T) == 4) return static_cast<T>(Memory::Read32(address));
+    else return static_cast<T>(Memory::Read64(address));
+}
+
+template <typename T>
+MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t address, T value) {
+    if (TryWriteGuestScalar(address, value)) [[likely]] return;
+    if constexpr (sizeof(T) == 1) Write8Slow(address, static_cast<uint8_t>(value));
+    else if constexpr (sizeof(T) == 2) Write16Slow(address, static_cast<uint16_t>(value));
+    else if constexpr (sizeof(T) == 4) Write32Slow(address, static_cast<uint32_t>(value));
+    else Write64Slow(address, static_cast<uint64_t>(value));
+}
+#else
 template <typename T>
 MKW_MEMORY_FORCE_INLINE T FlatLoad(uint32_t address) {
     T value{};
@@ -549,6 +596,7 @@ MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t address, T value) {
     const T swapped = MaybeByteSwap(value);
     std::memcpy(MKW_FLAT_GUEST_BASE + address, &swapped, sizeof(T));
 }
+#endif
 
 MKW_MEMORY_FORCE_INLINE uint8_t FlatRead8(uint32_t address) {
     if (GuestFlat::RequiresCheckedAccess()) return Memory::Read8(address);
