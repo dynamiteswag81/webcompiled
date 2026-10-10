@@ -78,7 +78,9 @@ output.txt
 # Web port: build output and local game data (never commit game files or translated code)
 /web/build/
 /web/dist/
-/web/game/
+# Host drop folder: everything in it stays local except the README.
+/web/game/*
+!/web/game/README.md
 /game/
 *.wasm
 DATA/

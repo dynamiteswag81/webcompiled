@@ -1,0 +1,51 @@
+# Docker build context for web/docker/Dockerfile. Game data never goes into an image.
+.git
+.github
+.claude
+.vs
+.vscode
+.idea
+
+# Host drop folder and every kind of local build/translation output
+web/game
+web/dist
+web/build
+/Assets
+/assets
+/generated
+/PulsarPacks
+/build
+/build-*
+/native-build*
+/local-products
+/out
+/dist
+Launcher/artifacts
+Launcher/dist
+
+# .NET / C++ intermediates
+**/bin
+**/obj
+**/TestResults
+**/__pycache__
+**/*.pyc
+*.o
+*.obj
+*.a
+
+# Anything that looks like game data
+*.iso
+*.gcm
+*.gcz
+*.ciso
+*.wbfs
+*.wia
+*.rvz
+*.nkit
+*.wad
+*.dol
+*.rel
+*.pul
+*.szs
+*.arc
+*.wasm

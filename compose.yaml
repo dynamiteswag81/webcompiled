@@ -1,0 +1,28 @@
+# Drop your game files into ./web/game, then:   docker compose up
+# The first start builds the site (slow, several GB of RAM); later starts just serve it.
+# Open http://localhost:8080/ in Chrome or Edge 137+.
+#
+#   PORT=9000 docker compose up           different host port
+#   MKW_JOBS=2 docker compose up          limit build parallelism on small machines
+#   docker compose run --rm wiicompiled-web --rebuild
+#   docker compose down -v                forget the build caches (full rebuild next time)
+services:
+  wiicompiled-web:
+    build:
+      context: .
+      dockerfile: web/docker/Dockerfile
+      args:
+        REPO_COMMIT: ${REPO_COMMIT:-}
+    image: wiicompiled-web
+    init: true
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      MKW_JOBS: ${MKW_JOBS:-}
+    volumes:
+      - ./web/game:/game:ro
+      - wiicompiled-cache:/cache
+
+volumes:
+  wiicompiled-cache:
