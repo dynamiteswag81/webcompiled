@@ -14,6 +14,11 @@ extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
+#ifdef __EMSCRIPTEN__
+// Web build: the disc is the operator-hosted tree described by disc-manifest.json, mapped to
+// WebDisc::RootPath() and streamed over HTTP Range (see runtime/include/hle/web_disc.h).
+#include "hle/web_disc.h"
+#endif
 
 #include <cstdint>
 #include <cstdlib>
@@ -155,6 +160,25 @@ static bool IsDvdDataRoot(const fs::path& path) {
 
 static const fs::path& GetDvdRoot() {
     std::call_once(g_dvdRootOnce, []() {
+#ifdef __EMSCRIPTEN__
+        // [paths] dvd_root is not consulted on the web: the disc always comes from the site.
+        std::string error;
+        if (!WebDisc::EnsureLoaded(&error)) {
+            RT_LOGF(RT_TAG_DVD, "ERROR: %s\n", error.c_str());
+            FailDvd("dvd_root", "DVD data is unavailable",
+                    "The game data could not be loaded from this site.\n\n" + error);
+        }
+        if (!WebDisc::IsDataRoot()) {
+            const std::string details =
+                "The hosted disc tree at " + WebDisc::BaseUrl() +
+                " is not an extracted DATA directory (its manifest lists no files/ directory "
+                "or no sys/fst.bin).";
+            RT_LOGF(RT_TAG_DVD, "ERROR: %s\n", details.c_str());
+            FailDvd("dvd_root", "DVD data is unavailable", details);
+        }
+        g_dvdRoot = WebDisc::RootPath();
+        return;
+#endif
         const fs::path path = RuntimeConfigFile::ResolvedDvdRoot();
         if (path.empty()) {
             FailDvdRoot("No DVD root is configured");
@@ -239,6 +263,13 @@ static void LoadFstIndex() {
     g_fstLoaded = true;
 
     const fs::path fstPath = GetDvdRoot() / "sys" / "fst.bin";
+#ifdef __EMSCRIPTEN__
+    std::vector<uint8_t> data;
+    const auto fstRelPath = WebDisc::RelativePath(fstPath);
+    if (!fstRelPath || !WebDisc::ReadWhole(*fstRelPath, data) || data.size() < 12) {
+        return;
+    }
+#else
     std::ifstream fstFile(fstPath, std::ios::binary);
     if (!fstFile.is_open()) {
         return;
@@ -256,6 +287,7 @@ static void LoadFstIndex() {
     if (!fstFile) {
         return;
     }
+#endif
 
     const uint32_t entryCount = BigEndian::Read32(&data[8]);
     if (entryCount == 0 || entryCount > 0x10000) {
@@ -473,6 +505,26 @@ static void WalkDirectory(const fs::path& root, bool recursive, bool announceErr
 // the disc may be replaced, nothing new is added.
 static void ScanDirectory(const fs::path& root, const std::string& virtualPrefix,
                           bool recursive = true, bool addNewFiles = true) {
+#ifdef __EMSCRIPTEN__
+    // The hosted disc tree has no Emscripten FS presence; its listing is the manifest.
+    if (const auto relRoot = WebDisc::RelativePath(root)) {
+        std::string prefix = virtualPrefix.empty() ? "/" : virtualPrefix;
+        if (prefix.back() != '/' && prefix.back() != '\\') {
+            prefix += "/";
+        }
+        WebDisc::ForEachFile(*relRoot, recursive,
+                             [&](const std::string& relativeToRoot, const std::string& relPath,
+                                 uint64_t size) {
+                                 std::string dvdPath = prefix + relativeToRoot;
+                                 if (!addNewFiles && !DvdEntryExists(dvdPath)) {
+                                     return;
+                                 }
+                                 RegisterFileEntry(std::move(dvdPath), WebDisc::RootPath() / relPath,
+                                                   static_cast<uint32_t>(size));
+                             });
+        return;
+    }
+#endif
     std::error_code ec;
     if (!fs::exists(root, ec)) {
         return;
