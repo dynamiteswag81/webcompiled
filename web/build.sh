@@ -491,11 +491,33 @@ if [[ -f "$cmake_build/CMakeCache.txt" ]]; then
     fi
 fi
 
+# Prebuilt libraries without game content (aurora, SDL3, abseil, ...; see
+# web/tools/make_web_prebuilt.py): when the shipped package is present, only the runtime and
+# the game compile here. CMake verifies the package against this checkout and falls back to a
+# from-source build by itself if it does not match.
+prebuilt_args=()
+prebuilt_archive=$workspace/web/prebuilt/web-prebuilt.tar.xz
+if [[ -f "$prebuilt_archive" && -f "$prebuilt_archive.sha256" ]]; then
+    prebuilt_sha=$(awk '{print $1}' "$prebuilt_archive.sha256")
+    prebuilt_dir=$build_dir/web-prebuilt
+    if [[ "$(cat "$prebuilt_dir/.archive-sha256" 2>/dev/null)" != "$prebuilt_sha" ]]; then
+        [[ "$(sha256_of "$prebuilt_archive")" == "$prebuilt_sha" ]] \
+            || fail "web/prebuilt/web-prebuilt.tar.xz does not match its .sha256 file (corrupt download?)"
+        rm -rf "$prebuilt_dir"
+        mkdir -p "$build_dir"
+        tar -xJf "$prebuilt_archive" -C "$build_dir"
+        printf '%s' "$prebuilt_sha" > "$prebuilt_dir/.archive-sha256"
+    fi
+    prebuilt_args=(-DMKW_WEB_PREBUILT_DIR="$prebuilt_dir")
+    info "using the prebuilt web libraries (aurora, SDL3, ...): only the runtime and the game compile"
+fi
+
 step "Configuring the WebAssembly build (emcmake)"
 emcmake cmake -S "$workspace/runtime" -B "$cmake_build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DMKW_PLATFORM_WEB_DIST="$out_dir" \
-    -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
+    -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" \
+    ${prebuilt_args[@]+"${prebuilt_args[@]}"}
 
 targets=("$BASE_TARGET")
 if ((build_retro)); then targets+=("$RETRO_TARGET"); fi

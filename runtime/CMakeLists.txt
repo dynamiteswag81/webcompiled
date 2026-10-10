@@ -100,6 +100,23 @@ set(MKW_NATIVE_PREBUILT_DIR "" CACHE PATH
 set(MKW_NATIVE_PREBUILT_EXPORT_DIR "" CACHE PATH
     "Maintainer-only: write a description of the configured aurora build here")
 
+# Web counterpart of the precompiled package: the libraries without game content
+# (aurora, SDL3, abseil, zstd, Crypto++, ...) prebuilt for wasm, made by
+# web/tools/make_web_prebuilt.py and shipped in web/prebuilt/. Used only when its
+# source fingerprint matches this checkout; otherwise they compile from source.
+set(MKW_WEB_PREBUILT_DIR "" CACHE PATH
+    "Web: precompiled aurora/third-party wasm package to link instead of building aurora-main")
+set(MKW_WEB_PREBUILT_EXPORT_DIR "" CACHE PATH
+    "Maintainer-only (web): write a description of the configured aurora build here")
+set(MKW_USE_WEB_PREBUILT FALSE)
+if(MKW_PLATFORM_WEB AND MKW_WEB_PREBUILT_DIR)
+    if(MKW_WEB_PREBUILT_EXPORT_DIR)
+        message(FATAL_ERROR "MKW_WEB_PREBUILT_DIR and MKW_WEB_PREBUILT_EXPORT_DIR are exclusive")
+    endif()
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/WebPrebuilt.cmake")
+    mkw_web_prebuilt_check()
+endif()
+
 # The two Crypto++ configuration macros are load-bearing for ABI: they shape the
 # structs and inline code the headers generate, so a first-party TU including
 # <cryptopp/...> must see exactly what the archive was compiled with. Both the
@@ -134,7 +151,7 @@ target_compile_features(mkw_toml11 INTERFACE cxx_std_17)
 # translation units), and under the shipped fixed toolchain it is bit-for-bit
 # identical for every user, so the prebuilt package harvests its archive and
 # this block is skipped entirely in that mode (see cmake/NativePrebuilt.cmake).
-if(NOT MKW_NATIVE_PREBUILT_DIR)
+if(NOT MKW_NATIVE_PREBUILT_DIR AND NOT MKW_USE_WEB_PREBUILT)
     file(GLOB MKW_CRYPTOPP_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_LIST_DIR}/third_party/cryptopp/*.cpp")
     list(FILTER MKW_CRYPTOPP_SOURCES EXCLUDE REGEX
@@ -226,6 +243,9 @@ if(MKW_NATIVE_PREBUILT_DIR)
     # present (the runtime includes aurora headers directly), they are simply
     # not compiled here.
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/NativePrebuilt.cmake")
+elseif(MKW_USE_WEB_PREBUILT)
+    # Same idea for the browser build (cmake/WebPrebuilt.cmake).
+    mkw_web_prebuilt_import()
 else()
     if(NOT EXISTS ${MKW_AURORA_DIR}/CMakeLists.txt)
         message(FATAL_ERROR "Requested aurora-main but ${MKW_AURORA_DIR} is missing")
@@ -314,6 +334,9 @@ else()
 
     if(MKW_NATIVE_PREBUILT_EXPORT_DIR)
         include("${CMAKE_CURRENT_LIST_DIR}/cmake/NativePrebuiltExport.cmake")
+    endif()
+    if(MKW_WEB_PREBUILT_EXPORT_DIR)
+        include("${CMAKE_CURRENT_LIST_DIR}/cmake/WebPrebuiltExport.cmake")
     endif()
 endif()
 
