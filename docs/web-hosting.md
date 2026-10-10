@@ -1,4 +1,4 @@
-# Hosting WiiCompiled in the browser
+# Hosting WebCompiled
 
 > [!IMPORTANT]
 > Status: the web build is **in development**. Every piece below is built and

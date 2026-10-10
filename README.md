@@ -1,294 +1,126 @@
-<img width="4190" height="1232" alt="wiicomplogofinalfinalfinalev2MADEBY_INKWRECK_plzcredit" src="https://github.com/user-attachments/assets/df7a3f2e-5336-479a-b4c0-968dd578726d" />
+# WebCompiled
 
-# WiiCompiled
+Mario Kart Wii in the browser. WebCompiled is a WebAssembly + WebGPU port of
+[WiiCompiled](https://github.com/patchzyy/Wiicompiled), the static recompilation of Mario Kart
+Wii. It is built so that someone who owns the game can host it, and anyone with a recent Chrome
+or Edge can open the URL and play: no install, no emulator, no per-player game files.
 
-<p align="center">
-  <a href="https://github.com/patchzyy/Wiicompiled/releases"><img alt="Windows 10 / 11, x64" src="https://img.shields.io/badge/Windows-10%20%2F%2011%20%C2%B7%20x64-0078D4"></a>
-  <a href="https://github.com/patchzyy/Wiicompiled/releases"><img alt="Linux, x64 / ARM64" src="https://img.shields.io/badge/Linux-x64%20%2F%20ARM64-FCC624?logo=linux&amp;logoColor=white"></a>
-  <a href="https://github.com/patchzyy/Wiicompiled/releases"><img alt="macOS 14+, Apple Silicon" src="https://img.shields.io/badge/macOS-14%2B%20%C2%B7%20Apple%20Silicon-0A84FF?logo=apple&amp;logoColor=white"></a>
-</p>
-<p align="center">
-  <a href="#building-from-source"><img alt="PowerPC static recompilation" src="https://img.shields.io/badge/PowerPC-static%20recompilation-FF9F0A"></a>
-  <a href="#retro-rewind"><img alt="Retro Rewind supported" src="https://img.shields.io/badge/Retro%20Rewind-supported-FF375F"></a>
-  <a href="https://github.com/TeamWheelWizard/WheelWizard/releases"><img alt="Install with Wheel Wizard" src="https://img.shields.io/badge/install%20with-Wheel%20Wizard-8B5CF6"></a>
-  <a href="https://github.com/patchzyy/Wiicompiled/releases"><img alt="Total downloads" src="https://img.shields.io/github/downloads/patchzyy/Wiicompiled/total?color=00B8D9&amp;logo=github"></a>
-  <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2EA44F?logo=gnu&amp;logoColor=white"></a>
-</p>
-
-A native PC port of Mario Kart Wii, made with static recompilation.
-
-There's no emulator in the loop, no interpreter, no JIT, no PowerPC
-anywhere at runtime.
+> [!WARNING]
+> **In development.** Every part of the browser build is built and tested without game data, but
+> the full pipeline has not yet been run end to end against a real disc. Expect rough edges. The
+> current state is tracked in [docs/web-port.md](docs/web-port.md#status).
 
 > [!IMPORTANT]
-> There is no Nintendo code, no assets and no game data anywhere in this project or its releases.
-> You need your own legally dumped copy of the PAL version of the game. Setup only ships the
-> toolchain, the translation runs on your machine against your disc image, and nothing ever gets
-> uploaded.
+> There is no Nintendo code, no assets and no game data in this repository, and no pre-translated
+> build is ever distributed. You need your own legally dumped, unmodified **PAL `RMCP01`** disc.
+> The translation runs on the host's machine.
 
-[What is a github, I just want to play](https://github.com/TeamWheelWizard/WheelWizard/releases/latest)
+## How it works
 
----
+WiiCompiled translates the game's PowerPC code into C++ ahead of time and compiles it into a
+native program. WebCompiled compiles that same output, together with WiiCompiled's runtime and
+the [aurora](https://github.com/encounter/aurora) graphics layer, to WebAssembly instead:
 
-## What it does
+- **Graphics:** aurora's GX implementation on the browser's WebGPU.
+- **Guest threads:** WebAssembly JSPI (JavaScript Promise Integration). No `SharedArrayBuffer`,
+  so no special server headers are needed.
+- **The disc:** served as plain static files and streamed on demand with HTTP Range requests.
+  Players download what they use, not the whole multi-GB disc.
+- **Saves:** stored in each player's browser (IndexedDB) and never uploaded.
 
-**Unlocked framerate with interpolation.** 
-The original game is hard-locked to 60 fps. The runtime can generate interpolated frames in between, so on a
-120/144 Hz monitor things genuinely look smoother.
+The result is a folder of static files that any ordinary web server can host.
 
-> [!WARNING]
-> Interpolation is experimental right now and will show artifacts in specific scenarios.
+## Hosting it
 
-**Any aspect ratio you want.** 
-Drag the window bigger, wider, whatever, the camera adjusts
-live.
-
-**Native rendering via aurora.** 
-The graphics layer is built on
-[aurora](https://github.com/encounter/aurora). Aurora is a source-level GameCube & Wii compatibility layer.
-
-**High internal resolution.** 
-Play at several times the console's resolution.
-
-**Music ducking.** 
-Start playing something else, Spotify, a YouTube video, and
-the game automatically mutes its own music until the other audio stops. Optional, if you'd
-rather it didn't. Windows uses system media controls and Linux uses MPRIS players.
-On macOS 14.2 or later, this detects other apps with active audio output and excludes
-the game's own audio. Apps that keep an output stream running silently can keep
-game music muted even when nothing is audible.
-
-**An in-game settings bar.** 
-Press **F10** while the game window has focus:
-- Internal resolution
-- FPS counter
-- MetalFX spatial upscaling on supported macOS GPUs
-- Controller assignment for all four ports
-- Full per-controller button mapping, including the bumpers
-- Dolphin-syntax input expressions and GCPadNew.ini import
-- Controller vibration on/off
-- Volume, instant mute, and the music ducking toggle
-
-Everything you change is saved to `Config.toml` on the spot and restored next launch.
-
-**Dolphin-compatible input expressions.** 
-Each GameCube control can carry an expression in Dolphin's input syntax, with the same operators
-and the same functions.
-A Dolphin `GCPadNew.ini` can be imported directly from the F10 bar.
-
-**Vibration toggle.** 
-Force feedback can be turned off for every port at once.
-The official Wii U / Switch GameCube adapter (WUP-028) works too; as with Dolphin, on Windows the
-adapter must be switched to the WinUSB driver once (Zadig).
-
-**Real Wii Remotes over Bluetooth.**
-Pair a Wii Remote with Windows (Settings > Bluetooth > Add device, press 1+2 or SYNC, leave the
-PIN empty)
-
-Known limitations of the Wii Remote path:
-- No IR pointer yet: menus are navigated with the D-pad and A (the game treats the remote as
-  pointing away from the screen).
-- Battery level is not reported to the game and the remote's speaker is not implemented.
-- Only the Wii Remote's own accelerometer is calibrated; the Nunchuk's uses SDL's fixed zero point.
-- The Classic Controller's L/R triggers reach the game as digital (full pull on click): SDL does not
-  expose their analog travel.
-- Turn the Wii Remote support off in that menu if you use a Mayflash DolphinBar, which already
-  presents the remote as a regular gamepad.
-
-## Requirements
-
-- Windows 10 or 11, 64-bit
-- GPU: GTX 1650 / RX 6400 / Arc A310 or higher
-- CPU: Intel Core i5-8400 / AMD Ryzen 5 2600 (4c/6c, ~3.5GHz+) or higher
-- About 20 GB of free disk space during installation (Final game size ~5 GB)
-- macOS 12 (Monterey) or later on Apple Silicon (`arm64`) or Intel (`x86_64-v3`); pre-Haswell Intel CPUs are unsupported
-- On macOS, a Metal-capable GPU and Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
-- A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
-  GCZ, CISO, WBFS, WIA and RVZ are accepted.
-
-> [!NOTE]
-> GPU/CPU minimums are set by driver support and D3D12/Vulkan feature requirements, not by the game's actual demands.
-
-Only the clean PAL revision will work. Anything else (other
-regions, patched executables) is rejected outright.
-
-> [!NOTE]
-> Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
-> game files won't be provided or tolerated.
-
-## Installing
-
-For an easy experience, use [Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard). Pick your clean PAL `RMCP01`
-image under Settings, turn on **WiiCompiled (beta)**, and hit install from the Home page.
-Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
-launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
-
-### macOS
-
-Download `WiiCompiled-Setup.pkg` from this repository's Releases page and open it. The universal
-package selects the appropriate bundled tools for the host architecture, supporting both Apple Silicon (`arm64`)
-and Intel (`x86_64`) Macs. It installs **WiiCompiled Setup** in Applications; open that app, choose
-your clean PAL `RMCP01` disc image, and select either the base game or Retro Rewind. For Retro Rewind, choose the `RetroRewind6` folder
-or its parent folder.
-
-Setup verifies and extracts the image locally, then translates and compiles the native app on your
-Mac. On a first run it may ask macOS to install Xcode Command Line Tools; complete Apple's installer,
-then open Setup again. When the build completes, Setup asks for administrator approval once to install
-`WiiCompiled.app` (and, if selected, `RetroRewind.app`) in `/Applications`.
-
-Setup opens Terminal while it works, so the extraction and build progress—and any error that needs
-reporting—remain visible.
-
-> [!CAUTION]
-> Only take builds from this repository's
-> [Releases](https://github.com/patchzyy/Wiicompiled/releases) page. If someone's sharing an
-> installer through Discord or some random download site, don't touch it!!
-
-## Play in the browser (self-hosted, in development)
-
-There's also a WebAssembly + WebGPU build that runs in the browser, aimed at people who want to
-host the game for others: you drop **your own** disc into a folder, your machine translates and
-compiles it once, and you get a static site. Anyone with a recent Chrome or Edge just opens the
-URL and plays. No install, no per-player game files, and saves stay in each player's browser.
+Put your disc in `web/game/` and start it. The first start translates and compiles the game,
+which takes a long time and several GB of RAM. After that it is cached and starts serving
+immediately.
 
 ```sh
-cp /path/to/your/mkwii.rvz web/game/     # optional: web/game/RetroRewind6/ for Retro Rewind
-docker compose up                        # or: web/host.sh
+git clone https://github.com/dynamiteswag81/webcompiled.git
+cd webcompiled
+cp /path/to/your/mkwii.rvz web/game/       # .iso .wbfs .rvz .wia .gcz .ciso .gcm, or the extracted sys/ + files/
+docker compose up                          # or, with the toolchain installed: web/host.sh
 ```
 
-Then open <http://localhost:8080>. Everything else (other servers, Range requests, HTTPS,
-troubleshooting) is in the [web hosting guide](docs/web-hosting.md).
+Then open <http://localhost:8080>.
 
-> [!WARNING]
-> The browser build is still in development and hasn't been run end to end against a real disc yet.
-> The same rules apply as everywhere else here: no game data is in this repo, and nothing
-> pre-translated is distributed. Don't host it publicly for people who don't own the game.
+To host on your own server, CDN or bucket, build once with `web/host.sh --build-only` and upload
+`web/dist/`. The [hosting guide](docs/web-hosting.md) covers requirements (Range requests, HTTPS,
+MIME types), server examples and troubleshooting.
 
-## A note on related projects
+### Retro Rewind
 
-WiiCompiled, Wheel Wizard, Retro rewind and other related projects are developed
-**independently** and each has its **own** contribution rules and all have their own
-rules. What applies here does not automatically apply there,
-and vice versa. Check each project's own CONTRIBUTING and README files.
+Put the [Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind) `RetroRewind6` folder next to
+the disc in `web/game/`. It is built as a second game, and players choose between Mario Kart Wii
+and Retro Rewind on the start screen. Online play (Retro-WFC) is not available in the browser.
 
-## Retro Rewind
+## Playing
 
-[Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind), ZPL's Mario Kart Wii mod distribution,
-can be built as its **own static profile**: instead of applying `Code.pul` as runtime patches,
-the Kamek/Pulsar code is statically translated together with the base game into a separate native
-executable.
+- **Browser:** Chrome or Edge 137 or newer, on desktop. The page checks for WebGPU and JSPI and
+  tells you what is missing. Firefox and Safari will work once they ship both.
+- **Controls:** keyboard or any gamepad the browser sees. Press `?` on the page for the controls
+  overlay.
+- **Saves** stay in your browser. Clearing the site's data deletes them.
+- **No online play:** browsers have no raw network sockets.
 
-Wheel Wizard drives this too.
+## Repository layout
 
-The browser build supports it as well: put the `RetroRewind6` folder next to your disc in
-`web/game/` and players get a choice between Mario Kart Wii and Retro Rewind on the start screen.
-Online play (Retro-WFC) isn't available in the browser.
+| Path | What it is |
+| --- | --- |
+| `web/` | Host scripts, build scripts, static server, the player page, browser tests |
+| `runtime/` | WiiCompiled's runtime (HLE of the Wii OS, GX, audio, input, storage), with the web platform layer |
+| `aurora-main/` | aurora, ported to Emscripten and browser WebGPU |
+| `translator/` | WiiCompiled's static recompiler (.NET 8) |
+| `projects/` | Translation project description for Mario Kart Wii |
+| `docs/` | [Hosting guide](docs/web-hosting.md) and [web port design and status](docs/web-port.md) |
+| `Launcher/` | WiiCompiled's native installers, kept from upstream |
 
 ## Building from source
 
-Owning the game is still required even if you compile everything yourself.
+`web/build.sh` (or `web/build.ps1`) is the full pipeline that `web/host.sh` drives: extract the
+disc, verify it, run the translator, compile to WebAssembly with Emscripten, and assemble
+`web/dist/`. It needs Emscripten 6.0.12, the .NET 8 SDK, CMake 3.25+, Ninja, Python 3 and
+nodtool or DolphinTool. The Docker image bundles all of them.
 
-You'll need: .NET 8 SDK, CMake, Ninja, and LLVM/Clang (the shipped build uses LLVM-MinGW targeting
-`x86-64-v3`).
-
-Build the translator:
-
-```powershell
-dotnet build translator/Translator.sln -c Release
-```
-
-The default test suite needs no binaries and no host C++ compiler, so you can hack on the
-translator without any game data around.
-
-For everything beyond that, feeding in your own `main.dol`/`StaticR.rel`, running the
-translation, generating the manifest and build graph, and compiling, see [`translator/README.md`](translator/README.md).
-
-For a step-by-step guide on compiling both WiiCompiled and Retro Rewind from source on macOS (Apple Silicon), see the [macOS Build Guide](docs/building-macos.md).
-
-For the browser build, see the [web hosting guide](docs/web-hosting.md) (operators) and the
-[web port design notes](docs/web-port.md) (contributors).
-
-## FAQ
-
-**Is this an emulator?**
-No. Everything is compiled to native code before you ever press play. At runtime there's nothing
-emulating a Wii CPU or GPU.
-
-**Do you provide the game?**
-No. Don't ask. Nothing in this repo or any release contains Nintendo code or assets.
-
-**Why does setup take so long?**
-Because we **don't** ship the translated binary, most other recomp projects do, but we
-don't want to risk it right now, setup has to run a static recompiler over the whole game
-and then throw a C++ compiler at the result. It's a **one-time cost** on your machine.
-
-**Which game version works?**
-Clean PAL `RMCP01`. Other regions and modified executables are **rejected**. Translating
-them against the wrong manifest would give you a subtly broken game that's miserable to debug for us.
-
-**Can I recompile other GameCube/Wii games with it?**
-The translator itself handles DOLs and RELs generically, see
-`projects/examples/generic-dol.yml`. The catch is that a *playable* port also needs a runtime:
-audio, input, GX, everything the game touches.
-
-**The game crashed / stopped with an error.**
-Errors are deliberately loud instead of quietly swallowed. Send a report along with the run log
-from `%LOCALAPPDATA%\WiiCompiled\Logs`.
-
-**Can I play it in a browser?**
-Someone who owns the game can host it: see [Play in the browser](#play-in-the-browser-self-hosted-in-development).
-It needs Chrome/Edge 137+ (WebGPU and WebAssembly JSPI), and there's no online play in the browser.
-The game is still compiled ahead of time; the browser doesn't run an emulator either.
-
-**Will you fix original bugs?**
-Not in the base game, behavior identical to real hardware is the goal. Only report things where this port differs
-from the original game. As for Retro Rewind, some base-game behavior **is** patched, so if it differs from the
-base game, that's normal. If Retro Rewind behavior differs between Dolphin/Wii and WiiCompiled, open an issue on GitHub.
-
-**How accurate are the physics?**
-100% - this is proven by in-game ghosts. Since ghosts are replay files based on inputs rather
-than tracked positions, matching ghosts prove the physics match across Dolphin/Wii/WiiCompiled.
-
-**Is it done?**
-Not fully. The game is in a state where everything should be playable and the physics do match
-100% with the original game, but compatibility, rendering, networking and performance are all
-actively being worked on. If you do find an issue, we strongly encourage you to open one on
-GitHub so we can take a look at it.
-
-## AI usage
-AI coding tools were used during development of this project. 
-All translated output is verified against real hardware behavior and most importantly, physics accuracy is proven synced across Wii, Dolphin, and WiiCompiled (see FAQ). 
+Most of the work needs no game data. The translator test suite, the aurora example in the browser,
+the runtime compile audit and the web tests all run without it; [docs/web-port.md](docs/web-port.md)
+lists the commands.
 
 ## Credits
-- **inkwreck** - making the logo
-- **[aurora](https://github.com/encounter/aurora)** - the GX rendering/windowing backend this
-  project's whole graphics layer sits on. MIT licensed.
-- **[Dawn](https://dawn.googlesource.com/dawn)** - Google's WebGPU implementation, powering
-  aurora's Direct3D, Vulkan and OpenGL backends.
-- **[Dolphin Emulator](https://github.com/dolphin-emu/dolphin)** - an invaluable reference for Wii
-  hardware behavior during development, plus the source of the free DSP coefficient ROM and the
-  unmodified default WiiConnect24 bootstrap tree bundled with the runtime.
-- **[Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind)** by ZPL and team - the mod
-  distribution this project supports.
-- **[Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard)** - the mod manager this
-  project integrates with as a launch backend.
-- Everyone in the static recompilation community.
 
-Bundled third-party components and their licenses live in
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+WebCompiled exists because of **[WiiCompiled](https://github.com/patchzyy/Wiicompiled)** by patchzyy
+and its contributors. The translator, the runtime and the Mario Kart Wii work are theirs; this
+project ports them to the browser. Please support and star the original, and check
+[their README](https://github.com/patchzyy/Wiicompiled#readme) for the native version.
 
+Also standing on the shoulders of:
+
+- **[aurora](https://github.com/encounter/aurora)**: the GameCube/Wii GX compatibility layer the
+  graphics run on (MIT).
+- **[Dawn](https://dawn.googlesource.com/dawn)** and Emscripten's **emdawnwebgpu**: WebGPU in C++
+  and in the browser.
+- **[Emscripten](https://emscripten.org)**: the WebAssembly toolchain.
+- **[Dolphin Emulator](https://github.com/dolphin-emu/dolphin)**: the hardware reference
+  WiiCompiled relies on, and the source of the free DSP coefficient ROM and the default
+  WiiConnect24 bootstrap tree bundled with the runtime.
+- **[nod](https://github.com/encounter/nod)**: disc image extraction.
+- **[Retro Rewind](https://wiki.tockdom.com/wiki/Retro_Rewind)** by ZPL and team.
+- **[Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard)** and everyone in the static
+  recompilation community.
+
+Bundled third-party components and their licenses are listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+WebCompiled is independent: it is not affiliated with WiiCompiled, Retro Rewind or Wheel Wizard,
+so please don't report browser-build problems to them.
 
 ## License
 
-WiiCompiled is free software: you can redistribute it and/or modify it under the terms of the
-[GNU General Public License, version 3](LICENSE) as published by the Free Software Foundation.
-
-WiiCompiled is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
-even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-General Public License for more details.
-
-Any mkwii distribution making use of WiiCompiled must be licensed under GPL v3.0.
+WebCompiled is free software under the [GNU General Public License, version 3](LICENSE), the same
+license as WiiCompiled, from which it is derived. It comes WITHOUT ANY WARRANTY; see the license
+for details.
 
 Not affiliated with, endorsed by, or associated with Nintendo. Mario Kart Wii is a trademark of
 Nintendo. No Nintendo intellectual property is contained in, distributed with, or obtainable
-through this project.
+through this project. Don't host it publicly for people who don't own the game.

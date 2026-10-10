@@ -1,6 +1,11 @@
-# Contributing to WiiCompiled
+# Contributing to WebCompiled
 
-Thanks for wanting to help! A few ground rules
+Thanks for wanting to help! WebCompiled is the browser port of
+[WiiCompiled](https://github.com/patchzyy/Wiicompiled). Problems that also happen in the native
+WiiCompiled build belong upstream; this repository is for the browser build (`web/`, the
+Emscripten/WebGPU parts of `aurora-main/` and `runtime/`, and the hosting tooling).
+
+A few ground rules
 
 ## The short version
 
@@ -41,11 +46,12 @@ That's ok, but rules apply:
 
 ## Bug reports
 
-See the FAQ in the [README](README.md)
+Include the output of the error overlay's **Copy details** button, your browser and version, and
+how the game is hosted (see [docs/web-hosting.md](docs/web-hosting.md)).
 
 ## A note on related projects
 
-WiiCompiled, Wheel Wizard, and other projects in this ecosystem are developed
+WebCompiled, WiiCompiled, Wheel Wizard, and other projects in this ecosystem are developed
 independently and each has its **own** contribution rules and all have their own
 rules around AI usage. What applies here does not automatically apply there,
 and vice versa. Check each project's own CONTRIBUTING file.
