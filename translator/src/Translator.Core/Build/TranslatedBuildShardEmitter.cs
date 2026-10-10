@@ -1024,14 +1024,21 @@ public static partial class TranslatedBuildShardEmitter
         return path;
     }
 
-    private static IReadOnlyList<string> ReadRetroExtraSources(string? cppDirectory, IReadOnlyList<FunctionRecord> modRecords)
+    private static IReadOnlyList<string> ReadRetroExtraSources(string? cppDirectory, IReadOnlyList<FunctionRecord> modRecords) =>
+        DiscoverRetroExtraSources(
+            cppDirectory,
+            modRecords.Select(static record => record.SourcePath).ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+    internal static IReadOnlyList<string> DiscoverRetroExtraSources(string? cppDirectory, IReadOnlySet<string> functionPaths)
     {
         if (string.IsNullOrWhiteSpace(cppDirectory) || !Directory.Exists(cppDirectory)) return Array.Empty<string>();
-        var functionPaths = modRecords.Select(static record => record.SourcePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return Directory.EnumerateFiles(cppDirectory, "*.*", SearchOption.AllDirectories)
             .Where(path => path.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".S", StringComparison.OrdinalIgnoreCase))
             .Select(Path.GetFullPath)
             .Where(path => !functionPaths.Contains(path))
+            // The #embed C++ companion of a blob .S duplicates its symbols; native builds keep the
+            // .S, and the web build swaps the .S for the sibling .cpp of the same stem.
+            .Where(path => !AssemblyBlobWriter.IsCompanionSource(path))
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }

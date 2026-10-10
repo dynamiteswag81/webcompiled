@@ -8,7 +8,7 @@ if (-not (Test-Path -LiteralPath $PayloadRoot -PathType Container)) { throw "Pay
 $forbiddenNames = @(
     'WiiCompiled.exe', 'RetroRewind.exe', 'mkw_recompiled.exe',
     'main.dol', 'StaticR.rel', 'Code.pul', 'base_translation_sources.bin',
-    'data_sections_init.cpp', 'data_sections_init_blobs.S', 'mkwii_base_manifest.json',
+    'data_sections_init.cpp', 'data_sections_init_blobs.S', 'data_sections_init_blobs.cpp', 'mkwii_base_manifest.json',
     'generated_func_aliases.cpp', 'translated_function_decls.h'
 )
 $forbiddenExtensions = @('.iso', '.gcm', '.gcz', '.ciso', '.wbfs', '.wia', '.rvz', '.dol', '.rel', '.pul')

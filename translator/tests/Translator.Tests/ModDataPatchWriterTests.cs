@@ -1,3 +1,5 @@
+using Translator.Core.Build;
+using Translator.Core.IO;
 using Translator.Core.Mods;
 
 namespace Translator.Tests;
@@ -34,7 +36,15 @@ public sealed class ModDataPatchWriterTests
             Assert.DoesNotContain("__APPLE__", assembly, StringComparison.Ordinal);
             Assert.Contains(".incbin", assembly, StringComparison.Ordinal);
 
-            var timestamps = new[] { cppPath, assemblyPath }
+            var companionPath = Path.Combine(root, "cpp", "mod_data_patches_blobs.cpp");
+            var companion = File.ReadAllText(companionPath);
+            Assert.Contains("alignas(16) extern const uint8_t kModuleImage[] = {", companion, StringComparison.Ordinal);
+            Assert.Contains("alignas(16) extern const uint8_t kKamekCodeSha1Digest[] = {", companion, StringComparison.Ordinal);
+            var moduleImageReference = Path.GetFullPath(Path.Combine(blobRoot, "module_image.bin")).Replace('\\', '/');
+            Assert.Contains($"#embed \"{moduleImageReference}\"", companion, StringComparison.Ordinal);
+            Assert.DoesNotContain(".incbin", companion, StringComparison.Ordinal);
+
+            var timestamps = new[] { cppPath, assemblyPath, companionPath }
                 .Concat(Directory.GetFiles(blobRoot, "*.bin"))
                 .ToDictionary(path => path, File.GetLastWriteTimeUtc);
             Write(cppPath, moduleImage, digest);
@@ -66,6 +76,8 @@ public sealed class ModDataPatchWriterTests
             Assert.Equal(["module_image.bin"], Directory.GetFiles(blobRoot, "*.bin").Select(Path.GetFileName).ToArray());
             var assembly = File.ReadAllText(Path.Combine(root, "mod_data_patches_blobs.S"));
             Assert.DoesNotContain("kKamekCodeSha1Digest", assembly, StringComparison.Ordinal);
+            var companion = File.ReadAllText(Path.Combine(root, "mod_data_patches_blobs.cpp"));
+            Assert.DoesNotContain("kKamekCodeSha1Digest", companion, StringComparison.Ordinal);
         }
         finally
         {
@@ -90,6 +102,9 @@ public sealed class ModDataPatchWriterTests
             var expected = Path.GetFullPath(Path.Combine(publishedBlobs, "module_image.bin")).Replace('\\', '/');
             Assert.Contains($".incbin \"{expected}\"", assembly, StringComparison.Ordinal);
             Assert.DoesNotContain(".staging", assembly, StringComparison.OrdinalIgnoreCase);
+            var companion = File.ReadAllText(Path.Combine(root, ".staging", "cpp", "mod_data_patches_blobs.cpp"));
+            Assert.Contains($"#embed \"{expected}\"", companion, StringComparison.Ordinal);
+            Assert.DoesNotContain(".staging", companion, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -116,6 +131,73 @@ public sealed class ModDataPatchWriterTests
 
             Assert.NotEqual(before, after);
             Assert.Contains("sha256=", after, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void CompanionMirrorsAssemblySymbolsAndHandlesEmptyBlobs()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mkw-blob-companion-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var assemblyPath = Path.Combine(root, "x_blobs.S");
+            AssemblyBlobWriter.Write(
+                assemblyPath,
+                Path.Combine(root, "x_blobs"),
+                Path.Combine(root, "x_blobs"),
+                [
+                    new AssemblyBlob("a.bin", "kA", new byte[] { 1, 2, 3 }, "a"),
+                    new AssemblyBlob("empty.bin", "kEmpty", Array.Empty<byte>(), "empty"),
+                ],
+                "// header");
+
+            var companionPath = AssemblyBlobWriter.CompanionSourcePath(assemblyPath);
+            Assert.Equal(Path.Combine(root, "x_blobs.cpp"), companionPath);
+            var companion = File.ReadAllText(companionPath);
+            Assert.StartsWith("// header", companion, StringComparison.Ordinal);
+            Assert.Contains("extern \"C\" {", companion, StringComparison.Ordinal);
+            Assert.Contains("alignas(16) extern const uint8_t kA[] = {", companion, StringComparison.Ordinal);
+            // A zero-length array is ill-formed, so an empty blob gets a pad byte and no #embed.
+            Assert.Contains("alignas(16) extern const uint8_t kEmpty[] = {\n    0\n};".Replace("\n", Environment.NewLine), companion, StringComparison.Ordinal);
+            Assert.Single(System.Text.RegularExpressions.Regex.Matches(companion, "^#embed ", System.Text.RegularExpressions.RegexOptions.Multiline));
+
+            // The native assembly is unaffected by the companion.
+            Assert.Contains(".incbin", File.ReadAllText(assemblyPath), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void RetroExtraSourcesSkipCompanionSoNativeBuildsDoNotDefineBlobSymbolsTwice()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mkw-blob-extras-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var cppPath = Path.Combine(root, "mod_data_patches.cpp");
+            Write(cppPath, [1, 2, 3, 4], null);
+            File.WriteAllText(Path.Combine(root, "helper.cpp"), "// hand-written extra");
+
+            var extras = TranslatedBuildShardEmitter
+                .DiscoverRetroExtraSources(root, new HashSet<string>())
+                .Select(Path.GetFileName)
+                .ToArray();
+
+            Assert.Equal(["helper.cpp", "mod_data_patches.cpp", "mod_data_patches_blobs.S"], extras);
+            Assert.True(File.Exists(Path.Combine(root, "mod_data_patches_blobs.cpp")));
         }
         finally
         {

@@ -21,7 +21,9 @@ internal static class AssemblyBlobWriter
         Directory.CreateDirectory(blobDirectory);
         var expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var assembly = new StringBuilder();
+        var companion = new StringBuilder();
         foreach (var header in headerLines) assembly.AppendLine(header);
+        BeginCompanion(companion, headerLines);
         // PE/COFF (Windows), Mach-O (macOS), and ELF (Linux) spell a read-only data section
         // differently in GNU-as syntax. The build always targets
         // whichever platform the translator itself runs on (there is no cross-compilation
@@ -50,7 +52,9 @@ internal static class AssemblyBlobWriter
             var referencePath = Path.Combine(blobReferenceDirectory, blob.FileName);
             assembly.AppendLine($".incbin \"{SanitizeAssemblyPath(referencePath)}\"");
             assembly.AppendLine();
+            AppendCompanionBlob(companion, blob, hash, SanitizeAssemblyPath(referencePath));
         }
+        EndCompanion(companion);
 
         foreach (var stalePath in Directory.EnumerateFiles(blobDirectory, "*.bin"))
         {
@@ -67,7 +71,77 @@ internal static class AssemblyBlobWriter
             assembly.AppendLine(".section .note.GNU-stack,\"\",@progbits");
         }
         FileOutput.WriteTextIfChanged(assemblyPath, assembly.ToString());
+        FileOutput.WriteTextIfChanged(CompanionSourcePath(assemblyPath), companion.ToString());
     }
+
+    /// <summary>
+    /// Path of the C++ companion emitted next to a blob <c>.S</c>: same stem, <c>.cpp</c> extension.
+    /// </summary>
+    internal static string CompanionSourcePath(string assemblyPath) => Path.ChangeExtension(assemblyPath, ".cpp");
+
+    /// <summary>
+    /// True when <paramref name="sourcePath"/> is the C++ companion of a sibling blob <c>.S</c>.
+    /// Native builds assemble the <c>.S</c>; compiling the companion as well would define every
+    /// blob symbol twice, so source discovery must skip it (the web build picks the companion
+    /// instead of the <c>.S</c>).
+    /// </summary>
+    internal static bool IsCompanionSource(string sourcePath) =>
+        sourcePath.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) &&
+        File.Exists(Path.ChangeExtension(sourcePath, ".S"));
+
+    // The companion defines what the .S defines: one external-linkage C symbol per blob,
+    // 16-byte aligned (.p2align 4), constant data (.rodata), filled from the same blob file. It is
+    // for toolchains that cannot assemble GNU-as .S files (Emscripten/wasm) and relies on C23
+    // #embed, which clang accepts in C++ as an extension. The .S stays the native source of truth.
+    private static void BeginCompanion(StringBuilder cpp, string[] headerLines)
+    {
+        foreach (var header in headerLines) cpp.AppendLine(header);
+        cpp.AppendLine("// C++ companion of the matching .S file, for toolchains that cannot assemble it");
+        cpp.AppendLine("// (Emscripten/wasm). Defines the same symbols using #embed.");
+        cpp.AppendLine("// Native builds use the .S; compile exactly one of the two, never both.");
+        cpp.AppendLine("#include <cstdint>");
+        cpp.AppendLine();
+        cpp.AppendLine("#if !defined(__clang__) || !defined(__has_embed)");
+        cpp.AppendLine("#error This file requires a clang with #embed support (clang 19 or newer).");
+        cpp.AppendLine("#endif");
+        cpp.AppendLine();
+        cpp.AppendLine("#pragma clang diagnostic push");
+        cpp.AppendLine("#pragma clang diagnostic ignored \"-Wc23-extensions\"");
+        cpp.AppendLine();
+        cpp.AppendLine("extern \"C\" {");
+        cpp.AppendLine();
+    }
+
+    private static void AppendCompanionBlob(StringBuilder cpp, AssemblyBlob blob, string hash, string embedPath)
+    {
+        var literal = EscapeCppString(embedPath);
+        cpp.AppendLine($"// {blob.Comment}; sha256={hash}");
+        cpp.AppendLine($"#if !__has_embed(\"{literal}\")");
+        cpp.AppendLine($"#error Missing blob file: {blob.FileName}");
+        cpp.AppendLine("#endif");
+        cpp.AppendLine($"alignas(16) extern const uint8_t {blob.Symbol}[] = {{");
+        if (blob.Data.Length == 0)
+        {
+            // A zero-length array is ill-formed. The .S symbol for an empty blob is a bare label
+            // that nothing reads, so one pad byte keeps the definition valid.
+            cpp.AppendLine("    0");
+        }
+        else
+        {
+            cpp.AppendLine($"#embed \"{literal}\"");
+        }
+        cpp.AppendLine("};");
+        cpp.AppendLine();
+    }
+
+    private static void EndCompanion(StringBuilder cpp)
+    {
+        cpp.AppendLine("} // extern \"C\"");
+        cpp.AppendLine();
+        cpp.AppendLine("#pragma clang diagnostic pop");
+    }
+
+    private static string EscapeCppString(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     private static string SanitizeAssemblyPath(string path) => Path.GetFullPath(path).Replace('\\', '/');
 }

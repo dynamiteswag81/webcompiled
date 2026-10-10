@@ -134,6 +134,11 @@ public class SdaAndGeneratorTests
             var assembly = File.ReadAllText(Path.Combine(stagedDirectory, "data_sections_init_blobs.S"));
             var expectedReference = Path.GetFullPath(Path.Combine(finalBlobDirectory, "_data.bin")).Replace('\\', '/');
             Assert.Contains($".incbin \"{expectedReference}\"", assembly, StringComparison.Ordinal);
+            var companion = File.ReadAllText(Path.Combine(stagedDirectory, "data_sections_init_blobs.cpp"));
+            Assert.Contains($"#embed \"{expectedReference}\"", companion, StringComparison.Ordinal);
+            Assert.Contains("alignas(16) extern const uint8_t kData__data[] = {", companion, StringComparison.Ordinal);
+            // The runtime-facing translation unit still declares the symbol the same way.
+            Assert.Contains("extern const uint8_t kData__data[];", File.ReadAllText(output), StringComparison.Ordinal);
             Assert.True(File.Exists(Path.Combine(stagedDirectory, "data_sections_init_blobs", "_data.bin")));
             Assert.False(File.Exists(Path.Combine(finalBlobDirectory, "_data.bin")));
         }
