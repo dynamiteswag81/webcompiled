@@ -169,8 +169,8 @@ inline bool IsSupportedResolutionMultiplier(float value) {
 // maps these to AuroraBackend.
 inline bool IsSupportedGraphicsApi(std::string_view value) {
 #if defined(__EMSCRIPTEN__)
-    // The browser chooses the native API behind WebGPU.
-    static constexpr std::array<std::string_view, 1> values{"auto"};
+    // The browser chooses the native API behind WebGPU; "webgpu" is the only (and auto) choice.
+    static constexpr std::array<std::string_view, 2> values{"auto", "webgpu"};
 #elif defined(__APPLE__)
     static constexpr std::array<std::string_view, 2> values{"auto", "metal"};
 // only vulkan for linux

@@ -58,6 +58,10 @@
 
 #include "abi_bridge.h"
 #include "guest_flat_memory.h"
+#if defined(__EMSCRIPTEN__)
+// [web] web/js/library_mkw_host.js: shows a fatal report in the page's error overlay.
+extern "C" void mkw_host_report_fatal(const char* message);
+#endif
 #include "gx_guest_write.h"
 #include "memory.h"
 #include "system_bridge.h"
@@ -789,6 +793,12 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
                 message.append("\n\n[Additional details were written to the crash log.]");
             }
         }
+#if defined(__EMSCRIPTEN__)
+        // [web] The page's error overlay is the dialog; the console holds the diagnostic.
+        message.append("\n\nSee the browser console for the full diagnostic.");
+        RT_LOGF(RT_TAG_RUNTIME, "fatal dialog: %s\n", message.c_str());
+        mkw_host_report_fatal(message.c_str());
+#else
         message.append("\n\nSee the WiiCompiled Logs folder for the full diagnostic.");
 #if defined(_WIN32)
         ::MessageBoxA(nullptr, message.c_str(), "WiiCompiled - Fatal Error",
@@ -797,6 +807,7 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
         // The shipped product is Windows-first. Keep non-Windows builds safe
         // and retain the console diagnostic when no native dialog is available.
         RT_LOGF(RT_TAG_RUNTIME, "fatal dialog: %s\n", message.c_str());
+#endif
 #endif
     } catch (...) {
         // Reporting a crash must never throw or mask the original failure.
@@ -1404,8 +1415,9 @@ int RuntimeMain(int argc, char** argv) {
             AuroraBackend backend;
         };
 #if defined(__EMSCRIPTEN__)
-        static constexpr std::array<GraphicsBackendEntry, 1> kGraphicsBackends{{
-            {"auto", BACKEND_AUTO},
+        // [web] aurora reports the browser's WebGPU as BACKEND_WEBGPU.
+        static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"webgpu", BACKEND_WEBGPU},
         }};
 #elif defined(__APPLE__)
         static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{

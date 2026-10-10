@@ -122,6 +122,8 @@ p { margin: 0 0 10px; }
 .notice { padding: 10px 12px; border-radius: 8px; border: 1px solid; font-size: 0.925rem; overflow-wrap: anywhere; }
 .notice-error { background: rgba(255, 107, 107, 0.1); border-color: rgba(255, 107, 107, 0.45); }
 .notice-warn { background: rgba(240, 177, 74, 0.1); border-color: rgba(240, 177, 74, 0.45); }
+/* Runtime fatal reports are multi-paragraph plain text. */
+#error-summary { white-space: pre-line; max-height: 40vh; overflow-y: auto; }
 
 /* ---- buttons ---------------------------------------------------------- */
 button { font: inherit; cursor: pointer; }

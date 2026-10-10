@@ -68,4 +68,13 @@ addToLibrary({
     if (ms > 1) setTimeout(resolve, ms);
     else MkwHost.postYield(resolve);
   }),
+
+  // The runtime's fatal report (ShowRuntimeFatalPopup), for the page's error overlay. Not a
+  // suspending import: the runtime continues into its own exit path right after.
+  mkw_host_report_fatal__deps: ['$UTF8ToString'],
+  mkw_host_report_fatal: (message) => {
+    const text = UTF8ToString(message);
+    if (Module['onMkwFatal']) Module['onMkwFatal'](text);
+    else err(text);
+  },
 });
