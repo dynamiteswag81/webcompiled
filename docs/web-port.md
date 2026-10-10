@@ -239,19 +239,116 @@ unless it says "local" (verified by the local session with the real game files).
   Riivolution code applies it (`web/tests/web_riivolution_test.cpp`, 41
   checks against a fake pack). Riivolution saves redirect into IDBFS.
 
-### Not verified yet
-* The shipped Dockerfile's apt/emsdk/nodtool steps (this sandbox blocks the
-  Debian mirrors); everything after them was run.
+### After the first real-game run (docs/web-test-report.md): changed, not yet verified with the game
 
-### Needs the real game (local session)
-* Full pipeline end to end: `web/build.sh <image>` (or `build.ps1`, which has
-  not been parsed by PowerShell yet), then play from `web/serve.py`.
-* V8 limits on the largest translated functions (function body size, locals),
-  JSPI secondary-stack depth for deep guest call chains, and link time/size of
-  the 427 MB shard set.
-* Gameplay: rendering correctness on browser WebGPU, audio, input (keyboard map
-  is a placeholder in the help overlay), save persistence across reloads,
-  pacing at 60 Hz with browser timers.
+Everything below is merged on `web-port` and tested without game data (tests named in each item).
+None of it has run against the real disc yet. The local session should rebuild and go through
+this list; the report's repro steps are repeated where they apply.
+
+**Crashes**
+* **C1 (viewport depth outside [0,1]).** Out-of-range GX depth ranges get a [0,1] viewport plus an
+  exact fragment-shader depth remap (`ShaderConfig::depthRangeFixup`, aurora `gx.hpp`,
+  `shader.cpp`, `common.cpp`); in-range draws are byte-identical to before. On the web, WebGPU
+  validation errors are logged and counted instead of fatal (device loss stays fatal).
+  Test: `web/tests/aurora_depth_range_test.mjs` (five GXPeekZ cases). *Verify:* sit on the title
+  screen past the first "Scene Exit" (30–60 s): no `WebGPU error` lines, HUD and transitions look
+  right.
+* **C2 (hidden page).** The guest parks (JSPI) while the page is hidden, audio output pauses, and
+  the VI grid and time base skip the hidden time. Several "no active frame" defects on the
+  begin-failed path are fixed (`aurora_end_frame` without a frame, ImGui outside a frame, staging
+  outside a frame, `get_last_draw_command` on an empty list). The exact out-of-bounds instruction
+  from the report was never symbolized. Test: the smoke test hides the page mid-run (frames stop,
+  "resumed after N ms", no trap). *Verify:* switch tabs or minimize for 60 s mid-race and during
+  loading, then return; also two tabs. If any trap remains, symbolize it with
+  `web/build/wasm/WiiCompiled.js.symbols`.
+* **C3 (0×0 canvas).** `aurora_initialize` waits for a laid-out canvas; sizes are clamped and the
+  scale NaN-guarded; no pass is built without its targets. Test: smoke test starts hidden.
+  *Verify:* start the game while the tab is hidden, then show it; resize and fullscreen mid-game.
+* **Browser shaders.** GX shaders no longer need the WGSL feature
+  `uniform_buffer_standard_layout` (uniform `array<vec4<u32>, 3>` on the web), so Chromium 141
+  compiles them; the documented Chrome/Edge 137+ minimum holds.
+
+**Input** (`web/tests/input/run_input_test.sh`: native merge test, layout sync, 83 browser
+checks with fake pads and real key events)
+* Default keyboard on player 1 with no setup, merged with a gamepad on the same port (buttons
+  ORed, larger stick deflection, max trigger). Layout: arrows = stick, X = A, Z = B, Left Shift
+  = R, Space = L, Enter = Start, C/V/Q = X/Y/Z, IJKL = C-stick, WASD = D-pad. Source of truth:
+  `runtime/include/web_input_layout.h`.
+* Gamepads through SDL3's Gamepad API backend: hot-plug, players 1–4, aurora's per-family
+  layouts, analog triggers, rumble (renewed past the browser's 3 s cap). Fix for Chrome's
+  "XInput" pads reporting the C-stick at full left until it moves.
+* Controls panel generated from the real bindings, detected pads, and an input debug view
+  (`?inputdebug=1`). F10 settings bar reachable with the mouse; bindings persist in IndexedDB.
+* *Verify with real pads* (open the debug view with `?inputdebug=1`):
+  1. Keyboard only: player 1 shows "keyboard"; arrows and X work in menus; in a race X
+     accelerates, Z brakes, Shift drifts, Space uses the item, Enter pauses; check what C, V, Q
+     and WASD do in game.
+  2. Connect an Xbox pad and press a button: player 1 shows "keyboard + gamepad (merged)"; bottom
+     face button accelerates, RT drifts, LT uses the item; the C-stick reads 0 at rest; the
+     keyboard still works.
+  3. DualShock/DualSense (Cross = A, R2 = R) and Switch Pro (bottom button = A, ZR = R): analog
+     triggers show partial values in the debug view.
+  4. Two to four pads land on players 2–4 and local multiplayer menus see them.
+  5. Unplug pad 1 mid-race (player 1 keeps the keyboard, others keep their players); replug it.
+  6. Rumble on item hits and when hit; a long rumble does not cut out after ~3 s; F10 ▸
+     vibration off stops it.
+  7. F10 (and the Settings button) with the mouse: rebind a key, reload, the binding stuck and
+     is highlighted in the Controls panel; "Restore default keys"; controller presets; assigning
+     a pad to a player. On Windows, F10 must not also focus the browser menu.
+  8. A pad without the browser's standard mapping shows the warning in the Controls panel.
+
+**Several players and hosting**
+* One tab saves: an exclusive Web Lock on the save store; a second tab runs read-only with a
+  banner (`web/tests/run_web_disc_test.sh`, Chromium tabs A–F).
+* `serve.py --https` (self-signed certificate with LAN SANs, openssl or pure-Python) and `--lan`;
+  `build.bat --lan` and `web/host.sh --https --lan` use them (`test_serve_https.py`,
+  `https_browser_test.mjs`). *Verify:* a second device on Wi-Fi.
+* Hashed, precompressed `.wasm` (`.gz`, `.br` when brotli is installed) with immutable caching
+  (`precompress_dist.py`, `test_serve.py`). *Verify:* the real 122 MiB wasm: brotli time, size,
+  second visit from cache.
+* Error report keeps the first occurrence of each distinct error besides the last 200 lines;
+  boot chatter is informational instead of `ERROR` (`RT_LOG_INFO`).
+
+**Drop-in hosting**
+* `build.bat` (Windows PowerShell 5.1, no admin): pinned and hash-checked portable toolchain in
+  `tools\` (Python, CMake, Ninja, nodtool, .NET 8, emsdk 6.0.12 with pre-seeded packages), CA
+  bundle for TLS, numbered steps, log in `web\build\build.log`, serves and opens the browser.
+  Pins: `web/windows/toolchain.lock.json`. Tests: `web/windows/tests/run-tests.sh` (pwsh 7 in
+  Docker, 63 checks, PS 5.1 lint). *Verify on Windows:*
+  1. Double-click from Explorer, in a path with spaces, on stock Windows 10 and 11: the window
+     stays open at the end and on errors; a SmartScreen prompt for the `.bat` is acceptable.
+  2. `build.bat --tools-only` under real Windows PowerShell 5.1: lock JSON parsing, zip
+     extraction, resumable downloads through redirects/proxies, logged child processes.
+  3. The .NET SDK download matches its SHA-512 (unreachable from the sandbox);
+     `tools\dotnet\dotnet --list-sdks` shows 8.0.425.
+  4. emsdk installs and activates with the portable Python, reuses the pre-seeded packages, and
+     `emcc --version` prints 6.0.12.
+  5. **RVZ extraction with the bundled nodtool** (never exercised: the first test used an
+     extracted tree), including on a PC without the VC++ runtime.
+  6. The translator builds with the portable .NET; configure needs no downloads with the prebuilt
+     package (and gets through FetchContent with the CA bundle if the package is stale); the
+     first link downloads the emdawnwebgpu port.
+  7. The 80-character path limit and 20 GB free-space checks are about right; nothing hits
+     MAX_PATH.
+  8. Steps 4–6 show sensible progress; a second double-click says "nothing to rebuild".
+  9. The browser opens; a busy port moves to the next one; `build.bat --lan` serves HTTPS to a
+     second device.
+  10. One run with antivirus HTTPS scanning on, to see the TLS hint.
+* Prebuilt libraries without game content in `web/prebuilt/web-prebuilt.tar.xz` (aurora, SDL3,
+  abseil, zstd, libpng, freetype, imgui, sqlite, Crypto++; made by
+  `web/tools/make_web_prebuilt.py`). A host compiles only the runtime and their own translated
+  game; the package is used only when its source fingerprint matches the checkout, otherwise the
+  build falls back to compiling everything (with a warning). Test: the smoke test links the real
+  product against it (41 build steps instead of ~760). *Verify:* the "using the prebuilt web
+  libraries" line in a real build, and the time saved. **Regenerate the package after any change
+  under `aurora-main/` or to `runtime/CMakeLists.txt`**, or hosts silently lose the speed-up.
+
+**Still open**
+* The shipped Dockerfile's apt/emsdk/nodtool steps (the sandbox blocks the Debian mirrors).
+* V8 limits on the largest translated functions, JSPI stack depth on deep guest call chains, and
+  performance (28–60 FPS in the first test; needs a profiling pass once stable).
+* Stray white/blue rectangles at the screen corners in the attract race (2D/HUD placement under
+  the widescreen policy); not investigated without the game.
 
 ## aurora web notes
 

@@ -97,8 +97,24 @@ precompiled in `web/prebuilt/`, so a host only compiles the runtime and their ow
 
 - **Browser:** Chrome or Edge 137 or newer, on desktop. The page checks for WebGPU and JSPI and
   tells you what is missing. Firefox and Safari will work once they ship both.
-- **Controls:** keyboard or any gamepad the browser sees. Press `?` on the page for the controls
-  overlay.
+- **Controls:** the keyboard works right away, and any gamepad the browser sees (Xbox,
+  PlayStation, Switch Pro, ...) joins automatically: the first pad plays alongside the keyboard
+  as player 1, more pads become players 2–4. Press a button on a pad once so the browser
+  shows it to the page. Default keys:
+
+  | Key | Does |
+  | --- | --- |
+  | Arrow keys | Steer / move in menus |
+  | X | Accelerate / confirm (A) |
+  | Z | Brake, reverse / back (B) |
+  | Left Shift | Drift / hop (R) |
+  | Space | Use item (L) |
+  | Enter | Pause (Start) |
+  | W A S D | D-pad (tricks, wheelies) |
+  | C / V / Q, I J K L | X / Y / Z, C-stick |
+
+  Press `?` on the page for the controls panel (it lists connected pads), and F10 in the game to
+  rebind keys or controllers.
 - **Saves** stay in your browser. Clearing the site's data deletes them.
 - **No online play:** browsers have no raw network sockets.
 
