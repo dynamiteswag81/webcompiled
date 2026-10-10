@@ -27,6 +27,8 @@ game_dir=${MKW_GAME_DIR:-$workspace/web/game}
 out_dir=$workspace/web/dist
 port=${PORT:-8080}
 bind=0.0.0.0
+serve_extra=()      # --https / --cert / --key / --san, passed on to web/serve.py
+https=0
 mode=all            # all | build-only | serve-only
 force_rebuild=0
 jobs=${MKW_JOBS:-}
@@ -44,6 +46,12 @@ Builds (once) and serves WiiCompiled in the browser from the game files you drop
   --game DIR      Folder with your game files (default: web/game, or $MKW_GAME_DIR)
   --port N        Port to serve on (default: 8080, or $PORT)
   --bind ADDR     Address to bind (default: 0.0.0.0, all interfaces)
+  --lan           Listen on all interfaces (already the default here; same as --bind 0.0.0.0)
+  --https         Serve HTTPS with a self-signed certificate (generated once, cached in web/.certs/).
+                  Other devices need HTTPS for WebGPU; their browsers show a one-time warning.
+  --cert FILE --key FILE
+                  Serve HTTPS with your own certificate instead (implies --https)
+  --san NAME      Extra host name or IP for the generated certificate (repeatable)
   --build-only    Build (if needed) and exit; do not start the server
   --serve-only    Serve the existing web/dist; never build
   --rebuild       Build again even if nothing changed (compile caches are still reused)
@@ -62,6 +70,11 @@ while [[ $# -gt 0 ]]; do
         --game)  [[ $# -ge 2 ]] || fail "--game needs a folder"; game_dir=$2; shift 2 ;;
         --port)  [[ $# -ge 2 ]] || fail "--port needs a number"; port=$2; shift 2 ;;
         --bind)  [[ $# -ge 2 ]] || fail "--bind needs an address"; bind=$2; shift 2 ;;
+        --lan)   bind=0.0.0.0; shift ;;
+        --https) https=1; serve_extra+=(--https); shift ;;
+        --cert)  [[ $# -ge 2 ]] || fail "--cert needs a file"; https=1; serve_extra+=(--cert "$2"); shift 2 ;;
+        --key)   [[ $# -ge 2 ]] || fail "--key needs a file"; serve_extra+=(--key "$2"); shift 2 ;;
+        --san)   [[ $# -ge 2 ]] || fail "--san needs a name or address"; serve_extra+=(--san "$2"); shift 2 ;;
         --out)   [[ $# -ge 2 ]] || fail "--out needs a folder"; out_dir=$2; shift 2 ;;
         --jobs)  [[ $# -ge 2 ]] || fail "--jobs needs a number"; jobs=$2; shift 2 ;;
         --build-only) [[ $mode != serve-only ]] || fail "--build-only and --serve-only cannot be combined"; mode=build-only; shift ;;
@@ -96,11 +109,16 @@ serve() {
     local shown=$bind
     case "$bind" in 0.0.0.0|::) shown=localhost ;; esac
     say ""
-    say "Serving the game at  http://$shown:$port/"
-    say "Players need Chrome or Edge 137+ (WebGPU). Other computers need HTTPS to use WebGPU:"
-    say "put this behind a TLS proxy (Caddy, nginx, a Cloudflare tunnel); http://localhost works as is."
+    if (( https )); then
+        say "Serving over HTTPS (the addresses to open are listed below)."
+    else
+        say "Serving the game at  http://$shown:$port/"
+        say "Players need Chrome or Edge 137+ (WebGPU). Other computers need HTTPS to use WebGPU:"
+        say "run again with --https (self-signed certificate, see docs/web-hosting.md) or put this behind"
+        say "a TLS proxy (Caddy, nginx, a tunnel); http://localhost works as is."
+    fi
     say ""
-    exec python3 "$workspace/web/serve.py" --dir "$out_dir" --bind "$bind" --port "$port"
+    exec python3 "$workspace/web/serve.py" --dir "$out_dir" --bind "$bind" --port "$port" ${serve_extra[@]+"${serve_extra[@]}"}
 }
 
 if [[ "$mode" == serve-only ]]; then

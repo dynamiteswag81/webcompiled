@@ -23,6 +23,22 @@
 .PARAMETER Bind
     Address to bind (default: 0.0.0.0, all interfaces).
 
+.PARAMETER Lan
+    Listen on all interfaces (already the default here; same as -Bind 0.0.0.0).
+
+.PARAMETER Https
+    Serve HTTPS with a self-signed certificate (generated once, cached in web/.certs/). Other
+    devices need HTTPS for WebGPU; their browsers show a one-time certificate warning.
+
+.PARAMETER Cert
+    Serve HTTPS with your own certificate (PEM) instead; implies -Https. Use with -Key.
+
+.PARAMETER Key
+    Private key (PEM) for -Cert.
+
+.PARAMETER San
+    Extra host name or IP address the generated certificate must be valid for (repeatable).
+
 .PARAMETER BuildOnly
     Build (if needed) and exit; do not start the server.
 
@@ -54,6 +70,11 @@ param(
     [string]$Game,
     [int]$Port = 0,
     [string]$Bind,
+    [switch]$Lan,
+    [switch]$Https,
+    [string]$Cert,
+    [string]$Key,
+    [string[]]$San = @(),
     [switch]$BuildOnly,
     [switch]$ServeOnly,
     [switch]$Rebuild,
@@ -94,13 +115,19 @@ Builds (once) and serves WiiCompiled in the browser from the game files you drop
   -Game DIR       Folder with your game files (default: web/game, or $env:MKW_GAME_DIR)
   -Port N         Port to serve on (default: 8080, or $env:PORT)
   -Bind ADDR      Address to bind (default: 0.0.0.0, all interfaces)
+  -Lan            Listen on all interfaces (already the default here; same as -Bind 0.0.0.0)
+  -Https          Serve HTTPS with a self-signed certificate (generated once, cached in web/.certs/);
+                  other devices need HTTPS for WebGPU and see a one-time browser warning
+  -Cert FILE -Key FILE
+                  Serve HTTPS with your own certificate instead (implies -Https)
+  -San NAME       Extra host name or IP for the generated certificate (repeatable)
   -BuildOnly      Build (if needed) and exit; do not start the server
   -ServeOnly      Serve the existing web/dist; never build
   -Rebuild        Build again even if nothing changed (compile caches are still reused)
   -Jobs N         Limit build parallelism to N (use this on machines with little RAM)
   -Out DIR        Site output directory (default: web/dist)
   -Help           Show this help (also: -h, --help)
-  (bash-style --game/--port/--bind/--build-only/--serve-only/--rebuild/--jobs/--out also work)
+  (bash-style --game/--port/--bind/--lan/--https/--cert/--key/--san/--build-only/--serve-only/--rebuild/--jobs/--out also work)
 
 The game folder must contain EITHER one disc image (.iso .gcm .gcz .ciso .wbfs .wia .rvz) OR an
 extracted DATA partition (a folder with sys/main.dol and files/), and OPTIONALLY the Retro Rewind
@@ -121,6 +148,11 @@ while ($i -lt $restArgs.Count) {
         '^--game$' { $i++; $Game = [string]$restArgs[$i] }
         '^--port$' { $i++; $Port = [int]$restArgs[$i] }
         '^--bind$' { $i++; $Bind = [string]$restArgs[$i] }
+        '^--lan$' { $Lan = [switch]$true }
+        '^--https$' { $Https = [switch]$true }
+        '^--cert$' { $i++; $Cert = [string]$restArgs[$i] }
+        '^--key$' { $i++; $Key = [string]$restArgs[$i] }
+        '^--san$' { $i++; $San += [string]$restArgs[$i] }
         '^--out$' { $i++; $Out = [string]$restArgs[$i] }
         '^--jobs$' { $i++; $Jobs = [int]$restArgs[$i] }
         '^--build-only$' { $BuildOnly = [switch]$true }
@@ -135,6 +167,13 @@ if ($BuildOnly -and $ServeOnly) { Stop-Host '-BuildOnly and -ServeOnly cannot be
 if (-not $Game) { $Game = if ($env:MKW_GAME_DIR) { $env:MKW_GAME_DIR } else { Join-Path $workspace 'web/game' } }
 if ($Port -le 0) { $Port = if ($env:PORT) { [int]$env:PORT } else { 8080 } }
 if (-not $Bind) { $Bind = '0.0.0.0' }
+if ($Lan) { $Bind = '0.0.0.0' }
+if ($Cert) { $Https = [switch]$true }
+$serveExtra = @()
+if ($Https) { $serveExtra += '--https' }
+if ($Cert) { $serveExtra += @('--cert', $Cert) }
+if ($Key) { $serveExtra += @('--key', $Key) }
+foreach ($name in $San) { if ($name) { $serveExtra += @('--san', $name) } }
 if ($Jobs -le 0 -and $env:MKW_JOBS) { $Jobs = [int]$env:MKW_JOBS }
 
 $outDir = [System.IO.Path]::GetFullPath($(if ($Out) { $Out } else { Join-Path $workspace 'web/dist' }), (Get-Location).ProviderPath)
@@ -175,12 +214,17 @@ function Start-Serving {
     if (-not $py) { Stop-Host 'Python 3 is needed to serve the site (https://www.python.org/downloads/)' }
     $shown = if ($Bind -in @('0.0.0.0', '::')) { 'localhost' } else { $Bind }
     Write-Say ''
-    Write-Say "Serving the game at  http://${shown}:$Port/"
-    Write-Say 'Players need Chrome or Edge 137+ (WebGPU). Other computers need HTTPS to use WebGPU:'
-    Write-Say 'put this behind a TLS proxy (Caddy, nginx, a Cloudflare tunnel); http://localhost works as is.'
+    if ($Https) {
+        Write-Say 'Serving over HTTPS (the addresses to open are listed below).'
+    } else {
+        Write-Say "Serving the game at  http://${shown}:$Port/"
+        Write-Say 'Players need Chrome or Edge 137+ (WebGPU). Other computers need HTTPS to use WebGPU:'
+        Write-Say 'run again with -Https (self-signed certificate, see docs/web-hosting.md) or put this behind'
+        Write-Say 'a TLS proxy (Caddy, nginx, a tunnel); http://localhost works as is.'
+    }
     Write-Say ''
     $lead = @($py | Select-Object -Skip 1)
-    & $py[0] @lead (Join-Path $workspace 'web/serve.py') --dir $outDir --bind $Bind --port "$Port"
+    & $py[0] @lead (Join-Path $workspace 'web/serve.py') --dir $outDir --bind $Bind --port "$Port" @serveExtra
     exit $LASTEXITCODE
 }
 

@@ -13,6 +13,15 @@
 // mount that is populated before main() runs and persisted to IndexedDB automatically after
 // every file close, unlink, rename or mkdir (IDBFS autoPersist), plus on page hide.
 //
+// Two tabs of one origin share that IndexedDB store, so before mounting it the page takes an
+// exclusive Web Lock (navigator.locks, name 'webcompiled-saves') and holds it for the life of the
+// document. The first tab gets the lock and persists as above. A later tab cannot get it (it waits
+// mkwStorageLockWaitMs, so a reload of the owning tab still works) and runs READ-ONLY: it loads the
+// saves that are in IndexedDB but never writes back (no autoPersist, no syncfs), and
+// Module.onMkwStorageReadOnly(message) lets the page say so. Without navigator.locks (old browser,
+// insecure context) it behaves as before, with a console warning. The lock is acquired inside the
+// same run dependency as the mount, so it delays main() but cannot deadlock startup.
+//
 // Module options (all optional):
 //   mkwDiscManifestUrl  disc manifest URL, resolved against the page (default 'disc-manifest.json')
 //   mkwDiscBaseUrl      disc tree URL; default: the manifest's "root" resolved against the
@@ -25,10 +34,14 @@
 //   mkwDiscPrefetchManifest  false: do not start fetching manifests at module load
 //   mkwPersistence      false keeps saves in memory only (default: on when IndexedDB exists)
 //   mkwPersistentDir    mount point of the persistent store (default '/home/web_user')
+//   mkwStorageLock      false skips the Web Lock (two tabs may then overwrite each other's saves)
+//   mkwStorageLockName  lock name (default 'webcompiled-saves')
+//   mkwStorageLockWaitMs how long to wait for the lock before going read-only (default 1500)
 //   onMkwStorageError   callback(message) for mount/sync failures
+//   onMkwStorageReadOnly callback(message) when another tab owns the save store (read-only mode)
 // Module helpers installed here:
 //   Module.mkwStorageFlush()  -> Promise; persists the store now (e.g. before closing the tab)
-//   Module.mkwStorageStatus   'persistent' | 'memory' | 'error' (after preRun)
+//   Module.mkwStorageStatus   'persistent' | 'readonly' | 'memory' | 'error' (after preRun)
 
 addToLibrary({
   $MkwDvd__deps: ['$MkwStorage'],
@@ -219,6 +232,7 @@ addToLibrary({
   $MkwStorage: {
     mount: null,
     installed: false,
+    readOnly: false,
 
     install() {
       if (MkwStorage.installed) return;
@@ -235,9 +249,22 @@ addToLibrary({
         }
         addRunDependency('mkw-idbfs');
         try {
+          // 'held' | 'busy' (another tab owns the saves) | 'unsupported' (no navigator.locks)
+          const lock = await MkwStorage.acquireLock();
+          const readOnly = lock === 'busy';
           FS.mkdirTree(dir);
-          FS.mount(IDBFS, { autoPersist: true }, dir);
+          FS.mount(IDBFS, { autoPersist: !readOnly }, dir);
           await MkwStorage.sync(true);
+          if (readOnly) {
+            // Saves are visible but this tab never writes them back: MkwStorage.mount stays null,
+            // so flush() is a no-op and no autoPersist/pagehide sync can run.
+            MkwStorage.readOnly = true;
+            Module['mkwStorageStatus'] = 'readonly';
+            const message = "This game is open in another tab; progress here won't be saved.";
+            err(`[storage] ${message}`);
+            Module['onMkwStorageReadOnly']?.(message);
+            return;
+          }
           MkwStorage.mount = dir;
           Module['mkwStorageStatus'] = 'persistent';
           IDBFS.onAutoPersistStateChanged = (active) => {
@@ -254,6 +281,37 @@ addToLibrary({
         } finally {
           removeRunDependency('mkw-idbfs');
         }
+      });
+    },
+
+    // Takes the exclusive save-store lock and keeps it until the document goes away (the callback
+    // returns a promise that never settles). Never rejects.
+    acquireLock() {
+      if (Module['mkwStorageLock'] === false) return Promise.resolve('unsupported');
+      const locks = globalThis.navigator?.locks;
+      if (!locks || typeof locks.request != 'function') {
+        console.warn('[storage] navigator.locks is unavailable (old browser or insecure context); ' +
+                     "several tabs of this game can overwrite each other's saves");
+        return Promise.resolve('unsupported');
+      }
+      const name = Module['mkwStorageLockName'] || 'webcompiled-saves';
+      const waitMs = Module['mkwStorageLockWaitMs'] ?? 1500;
+      return new Promise((resolve) => {
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), waitMs);
+        locks.request(name, { signal: abort.signal }, () => {
+          clearTimeout(timer);
+          resolve('held');
+          return new Promise(() => {});
+        }).catch((e) => {
+          clearTimeout(timer);
+          if (e && e.name === 'AbortError') {
+            resolve('busy');
+          } else {
+            console.warn(`[storage] Web Lock request failed (${e && e.message || e}); continuing without it`);
+            resolve('unsupported');
+          }
+        });
       });
     },
 
@@ -306,4 +364,8 @@ addToLibrary({
   // 1 when $HOME is backed by IndexedDB, 0 when saves only live in memory.
   mkw_storage_is_persistent__deps: ['$MkwStorage'],
   mkw_storage_is_persistent: () => MkwStorage.mount ? 1 : 0,
+
+  // 1 when another tab owns the save store and this one only reads it (nothing is written back).
+  mkw_storage_is_readonly__deps: ['$MkwStorage'],
+  mkw_storage_is_readonly: () => MkwStorage.readOnly ? 1 : 0,
 });

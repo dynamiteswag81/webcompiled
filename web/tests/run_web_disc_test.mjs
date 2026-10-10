@@ -4,7 +4,8 @@
 // names, a >16 MiB file) and a fake Retro Rewind pack (mods/RetroRewind6: Riivolution XMLs plus
 // files/folders), runs web/tools/make_disc_manifest.py on both (--tree for the pack), serves
 // them with a Range-capable test server, then runs the wasm tests under Node (JSPI) and in
-// headless Chromium (disc test: two page loads, IDBFS write then verify after reload).
+// headless Chromium (disc test: IDBFS write, a second tab at the same time that must be read-only,
+// then verify after both closed; a run without navigator.locks; riivolution).
 // Build first: web/tests/run_web_disc_test.sh does both.
 //
 // usage: node web/tests/run_web_disc_test.mjs <dir with the test .mjs files> [--no-node] [--no-browser]
@@ -302,41 +303,90 @@ if (runBrowser) {
     executablePath: fs.existsSync(executablePath) ? executablePath : undefined,
   });
   const context = await browser.newContext();
-  const tab = await context.newPage();
-  let waiter = null;
-  const lines = [];
-  tab.on('console', (msg) => {
-    const text = msg.text();
-    lines.push(text);
-    console.log(`[chromium] ${text}`);
-    if (waiter && DONE.test(text)) waiter(text);
-  });
-  tab.on('pageerror', (error) => {
-    console.log(`[chromium] pageerror: ${error.message}`);
-    waiter?.(`FAIL: pageerror ${error.message}`);
-  });
-  const runPage = async (query) => {
+  const lines = []; // every console line of every page, for the assertions below
+  // Opens a page in the shared context (same origin, so same IndexedDB and same Web Locks).
+  const openTab = async (name, init) => {
+    const tab = await context.newPage();
+    if (init) await tab.addInitScript(init);
+    const t = { tab, name, waiter: null };
+    tab.on('console', (msg) => {
+      const text = msg.text();
+      lines.push({ name, text });
+      console.log(`[chromium ${name}] ${text}`);
+      if (t.waiter && DONE.test(text)) t.waiter(text);
+    });
+    tab.on('pageerror', (error) => {
+      console.log(`[chromium ${name}] pageerror: ${error.message}`);
+      t.waiter?.(`FAIL: pageerror ${error.message}`);
+    });
+    return t;
+  };
+  const runPage = async (t, query) => {
     const result = new Promise((resolve) => {
-      waiter = resolve;
+      t.waiter = resolve;
       setTimeout(() => resolve('FAIL: timed out'), 180_000);
     });
-    await tab.goto(`${origin}/index.html?${query}`);
+    await t.tab.goto(`${origin}/index.html?${query}`);
     const line = await result;
-    waiter = null;
+    t.waiter = null;
     return line;
   };
-  const nonce = Math.random().toString(36).slice(2);
-  const first = await runPage(`test=disc&persist=write&nonce=${nonce}`);
-  if (!first.startsWith('PASS')) failed = true;
+  // page.close() can wait on a parked JSPI stack; do not let it stall the suite.
+  const closeTab = (t) => Promise.race([t.tab.close().catch(() => {}), new Promise((r) => setTimeout(r, 5000))]);
+  const expectPass = (label, line) => {
+    console.log(`chromium: ${label}: ${line}`);
+    if (!line.startsWith('PASS')) failed = true;
+  };
   // Give IDBFS autoPersist (setTimeout + IndexedDB transaction) time to store the unflushed file.
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  const second = await runPage(`test=disc&persist=verify&nonce=${nonce}`);
-  if (!second.startsWith('PASS')) failed = true;
-  const third = await runPage('test=riivolution');
-  if (!third.startsWith('PASS')) failed = true;
-  console.log(`chromium: disc write run: ${first}`);
-  console.log(`chromium: disc reload run: ${second}`);
-  console.log(`chromium: riivolution run: ${third}`);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 2000));
+
+  const nonce = Math.random().toString(36).slice(2);
+
+  // Tab A owns the save store (holds the Web Lock) and stays open.
+  const tabA = await openTab('A');
+  expectPass('disc write run (tab A)', await runPage(tabA, `test=disc&persist=write&nonce=${nonce}`));
+  await settle();
+
+  // Tab B, same browser profile, while A is alive: must come up read-only, see A's saves, and
+  // never write (its tampered/new files must not reach IndexedDB).
+  const tabB = await openTab('B');
+  expectPass('disc read-only run (tab B, A still open)', await runPage(tabB, `test=disc&persist=readonly&nonce=${nonce}`));
+  if (!lines.some((l) => l.name === 'B' && l.text.includes("This game is open in another tab; progress here won't be saved"))) {
+    console.error('FAIL: the read-only tab did not log the "open in another tab" message');
+    failed = true;
+  }
+  if (lines.some((l) => l.name === 'A' && l.text.includes('another tab'))) {
+    console.error('FAIL: the first tab must not report being read-only');
+    failed = true;
+  }
+  await settle(); // time for a (wrong) autoPersist of B's writes to show up in IndexedDB
+  await closeTab(tabB);
+  await closeTab(tabA);
+
+  // Tab C: after both closed it owns the store again and sees exactly what A stored.
+  const tabC = await openTab('C');
+  expectPass('disc reload run (tab C, A and B closed)', await runPage(tabC, `test=disc&persist=verify&nonce=${nonce}`));
+  await closeTab(tabC);
+
+  // Reload of the owning tab: the old document's lock must not leave the new one read-only.
+  const tabD = await openTab('D');
+  expectPass('disc owner run (tab D)', await runPage(tabD, `test=disc&persist=verify&nonce=${nonce}`));
+  expectPass('disc reload of the owning tab (tab D)', await runPage(tabD, `test=disc&persist=verify&nonce=${nonce}`));
+  await closeTab(tabD);
+
+  // No navigator.locks (old browser / insecure context): the previous behaviour plus a warning.
+  const tabE = await openTab('E', () => {
+    Object.defineProperty(Navigator.prototype, 'locks', { get: () => undefined, configurable: true });
+  });
+  expectPass('disc run without Web Locks (tab E)', await runPage(tabE, `test=disc&persist=nolocks&nonce=${nonce}`));
+  if (!lines.some((l) => l.name === 'E' && /navigator\.locks is unavailable/.test(l.text))) {
+    console.error('FAIL: no console warning when navigator.locks is unavailable');
+    failed = true;
+  }
+  await closeTab(tabE);
+
+  const tabF = await openTab('F');
+  expectPass('riivolution run', await runPage(tabF, 'test=riivolution'));
   // browser.close() can hang while a JSPI stack is parked; the process exits below instead.
 }
 

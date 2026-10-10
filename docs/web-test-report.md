@@ -143,6 +143,13 @@ Measured:
     visit unless it is cached (`serve.py` sends `Cache-Control: no-cache` for wasm; use a
     content-hashed filename plus long-lived caching instead).
 
+Follow-up (implemented, tested without game data; see [web-hosting.md](web-hosting.md)): the save store
+takes a Web Lock and a second tab runs read-only with a banner; `serve.py --https --lan` with a
+generated self-signed certificate; the wasm is content-hashed, precompressed (`.gz`, `.br` when
+available), served with `Content-Encoding` and `immutable` caching; the error report keeps the first
+occurrence of each distinct error. Not yet exercised: a real second device over Wi-Fi, a real Caddy,
+nginx, tunnel or Tailscale setup, and the real 122 MiB wasm.
+
 ## Operator experience: is drop-in hosting easy for a human? Not yet
 
 The user's goal: **a host drops a game file into a folder and runs one thing.** Here is what it

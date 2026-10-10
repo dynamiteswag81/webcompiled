@@ -1,5 +1,6 @@
 """Tests for web/serve.py (stdlib only).  Run:  python3 -m unittest web/tests/test_serve.py -v"""
 
+import gzip
 import http.client
 import os
 import sys
@@ -184,6 +185,170 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(serve.parse_range("bytes=-1", 100), (99, 99))
         with self.assertRaises(serve.RangeError):
             serve.parse_range("bytes=100-", 100)
+
+
+HASHED = "/Game.1a2b3c4d.wasm"
+RAW_WASM = b"\0asm\1\0\0\0" + b"A" * 50000
+GZ_WASM = gzip.compress(RAW_WASM, 9)
+BR_WASM = b"not-really-brotli-but-the-server-does-not-look" * 5  # distinct bytes and length
+
+
+class PrecompressedTest(unittest.TestCase):
+    """Content-hashed names, Cache-Control and .br/.gz siblings."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = cls.root = os.path.join(cls.tmp.name, "root")
+        os.makedirs(root)
+
+        def write(name, data):
+            with open(os.path.join(root, name), "wb") as f:
+                f.write(data)
+
+        write("Game.1a2b3c4d.wasm", RAW_WASM)
+        write("Game.1a2b3c4d.wasm.gz", GZ_WASM)
+        write("Game.1a2b3c4d.wasm.br", BR_WASM)
+        write("Only.0badc0de.wasm", RAW_WASM)          # hashed, nothing precompressed
+        write("Gz.aaaaaaaa.wasm", RAW_WASM)
+        write("Gz.aaaaaaaa.wasm.gz", GZ_WASM)          # only gzip
+        write("plain.wasm", RAW_WASM)                  # unhashed: must stay no-cache
+        write("plain.wasm.gz", GZ_WASM)
+        write("stale.js", b"console.log('new')" * 100)
+        write("stale.js.gz", gzip.compress(b"old"))
+        old = os.path.getmtime(os.path.join(root, "stale.js")) - 1000
+        os.utime(os.path.join(root, "stale.js.gz"), (old, old))
+        write("index.html", b"<!doctype html>")
+        cls.server = serve.make_server(root, "127.0.0.1", 0, quiet=True)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.tmp.cleanup()
+
+    def request(self, method, path, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request(method, path, headers=headers or {})
+            resp = conn.getresponse()
+            return resp, resp.read()
+        finally:
+            conn.close()
+
+    def test_hashed_wasm_is_immutable(self):
+        for path in (HASHED, "/Only.0badc0de.wasm", HASHED + ".gz", HASHED + ".br"):
+            resp, _ = self.request("GET", path)
+            self.assertEqual(resp.status, 200, path)
+            self.assertEqual(resp.getheader("Cache-Control"), "public, max-age=31536000, immutable", path)
+
+    def test_unhashed_and_text_stay_no_cache(self):
+        for path in ("/plain.wasm", "/index.html", "/stale.js"):
+            resp, _ = self.request("GET", path, {"Accept-Encoding": "gzip, br"})
+            self.assertEqual(resp.getheader("Cache-Control"), "no-cache", path)
+
+    def test_brotli_preferred_over_gzip(self):
+        resp, body = self.request("GET", HASHED, {"Accept-Encoding": "gzip, deflate, br"})
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.getheader("Content-Encoding"), "br")
+        self.assertEqual(body, BR_WASM)
+        self.assertEqual(resp.getheader("Content-Length"), str(len(BR_WASM)))
+        self.assertEqual(resp.getheader("Content-Type"), "application/wasm")
+        self.assertEqual(resp.getheader("Vary"), "Accept-Encoding")
+        self.assertEqual(resp.getheader("Cache-Control"), "public, max-age=31536000, immutable")
+
+    def test_gzip_when_only_gzip_accepted(self):
+        resp, body = self.request("GET", HASHED, {"Accept-Encoding": "gzip"})
+        self.assertEqual(resp.getheader("Content-Encoding"), "gzip")
+        self.assertEqual(body, GZ_WASM)
+        self.assertEqual(gzip.decompress(body), RAW_WASM)
+        self.assertEqual(resp.getheader("Content-Length"), str(len(GZ_WASM)))
+        self.assertEqual(resp.getheader("Content-Type"), "application/wasm")
+
+    def test_q_values_and_star(self):
+        cases = [
+            ("br;q=0, gzip", "gzip"),
+            ("gzip;q=0, br;q=0", None),
+            ("*", "br"),
+            ("identity", None),
+            ("br;q=0.5, gzip;q=1", "br"),  # preference order is ours, any q > 0 qualifies
+            ("x-gzip", "gzip"),
+            ("", None),
+        ]
+        for accept, want in cases:
+            resp, _ = self.request("GET", HASHED, {"Accept-Encoding": accept})
+            self.assertEqual(resp.getheader("Content-Encoding"), want, accept)
+            self.assertEqual(resp.getheader("Vary"), "Accept-Encoding", accept)
+
+    def test_no_accept_encoding_gets_identity_with_vary(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.putrequest("GET", HASHED, skip_accept_encoding=True)
+            conn.endheaders()
+            resp = conn.getresponse()
+            body = resp.read()
+        finally:
+            conn.close()
+        self.assertIsNone(resp.getheader("Content-Encoding"))
+        self.assertEqual(body, RAW_WASM)
+        self.assertEqual(resp.getheader("Vary"), "Accept-Encoding")
+        self.assertEqual(resp.getheader("Accept-Ranges"), "bytes")
+
+    def test_range_gets_uncompressed_bytes(self):
+        resp, body = self.request("GET", HASHED, {"Accept-Encoding": "gzip, br", "Range": "bytes=4-11"})
+        self.assertEqual(resp.status, 206)
+        self.assertIsNone(resp.getheader("Content-Encoding"))
+        self.assertEqual(body, RAW_WASM[4:12])
+        self.assertEqual(resp.getheader("Content-Range"), "bytes 4-11/%d" % len(RAW_WASM))
+        self.assertEqual(resp.getheader("Vary"), "Accept-Encoding")
+
+    def test_head_reports_encoded_length(self):
+        resp, body = self.request("HEAD", HASHED, {"Accept-Encoding": "gzip"})
+        self.assertEqual(body, b"")
+        self.assertEqual(resp.getheader("Content-Encoding"), "gzip")
+        self.assertEqual(resp.getheader("Content-Length"), str(len(GZ_WASM)))
+
+    def test_only_existing_siblings_are_used(self):
+        resp, body = self.request("GET", "/Gz.aaaaaaaa.wasm", {"Accept-Encoding": "br, gzip"})
+        self.assertEqual(resp.getheader("Content-Encoding"), "gzip")
+        resp, body = self.request("GET", "/Only.0badc0de.wasm", {"Accept-Encoding": "br, gzip"})
+        self.assertIsNone(resp.getheader("Content-Encoding"))
+        self.assertIsNone(resp.getheader("Vary"))
+        self.assertEqual(body, RAW_WASM)
+
+    def test_unhashed_file_with_sibling_is_compressed_but_revalidated(self):
+        resp, body = self.request("GET", "/plain.wasm", {"Accept-Encoding": "gzip"})
+        self.assertEqual(resp.getheader("Content-Encoding"), "gzip")
+        self.assertEqual(body, GZ_WASM)
+        self.assertEqual(resp.getheader("Cache-Control"), "no-cache")
+
+    def test_stale_sibling_ignored(self):
+        resp, body = self.request("GET", "/stale.js", {"Accept-Encoding": "gzip"})
+        self.assertIsNone(resp.getheader("Content-Encoding"))
+        self.assertTrue(body.startswith(b"console.log"))
+
+    def test_sibling_itself_is_served_as_a_plain_file(self):
+        resp, body = self.request("GET", HASHED + ".gz", {"Accept-Encoding": "gzip"})
+        self.assertIsNone(resp.getheader("Content-Encoding"))
+        self.assertEqual(resp.getheader("Content-Type"), "application/gzip")
+        self.assertEqual(body, GZ_WASM)
+
+    def test_conditional_get_keeps_headers(self):
+        resp, _ = self.request("GET", HASHED, {"Accept-Encoding": "gzip"})
+        lm = resp.getheader("Last-Modified")
+        resp, body = self.request("GET", HASHED, {"Accept-Encoding": "gzip", "If-Modified-Since": lm})
+        self.assertEqual(resp.status, 304)
+        self.assertEqual(body, b"")
+        self.assertEqual(resp.getheader("Cache-Control"), "public, max-age=31536000, immutable")
+        self.assertEqual(resp.getheader("Vary"), "Accept-Encoding")
+
+    def test_helpers(self):
+        self.assertEqual(serve.accepted_encodings("gzip;q=0.5, br"), {"gzip": 0.5, "br": 1.0})
+        self.assertTrue(serve.encoding_acceptable({"*": 1.0}, "gzip"))
+        self.assertFalse(serve.encoding_acceptable({"gzip": 0.0, "*": 1.0}, "gzip"))
+        self.assertFalse(serve.encoding_acceptable({}, "br"))
 
 
 if __name__ == "__main__":

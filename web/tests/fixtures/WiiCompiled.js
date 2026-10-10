@@ -45,6 +45,10 @@
     await WebAssembly.instantiate(Module.wasmBinary, {});
     console.log('stub wasm instantiated (' + Module.wasmBinary.byteLength + ' bytes)');
     Module.setStatus('');
+    // ?saves=readonly: what web/js/library_mkw_dvd.js does when another tab owns the save store.
+    if (new URLSearchParams(location.search).get('saves') === 'readonly' && Module.onMkwStorageReadOnly) {
+      Module.onMkwStorageReadOnly("This game is open in another tab; progress here won't be saved.");
+    }
     if (mode === 'slow') await sleep(1500);
     draw();
     Module.onRuntimeInitialized();

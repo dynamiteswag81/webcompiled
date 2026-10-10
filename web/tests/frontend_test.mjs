@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -214,9 +214,51 @@ try {
     await waitPhase(page, 'ready');
     await page.evaluate(() => { for (let i = 0; i < 1000; i++) console.log('spam ' + i); window.WiiCompiledUI.showError('manual', 'trigger'); });
     const details = await page.inputValue('#error-details');
-    const lines = details.split('\n').filter((l) => /^\[\s*[\d.]+\] /.test(l));
+    const tail = details.slice(details.indexOf('--- last '));
+    const lines = tail.split('\n').filter((l) => /^\[\s*[\d.]+\] /.test(l));
     check(lines.length === 200 && details.includes('spam 999') && !details.includes('spam 100\n'), `console buffer capped at 200 lines (got ${lines.length})`);
     await page.context().close();
+  }
+
+  // 3b. Error retention: boot noise must not push out the first occurrence of each distinct error ---
+  {
+    const page = await newPage();
+    await page.goto(base);
+    await waitPhase(page, 'ready');
+    await page.evaluate(() => {
+      console.error('[dvd/web] mount failed: manifest HTTP 404 for disc-manifest.json');   // root cause, very early
+      console.warn('benign warning line');
+      for (let i = 0; i < 3; i++) console.error('read failed: offset=0x' + (4096 + i).toString(16) + ' length=' + (100 + i) + ' code=-2');
+      console.log('fatal-looking info line: could not open save 7');
+      console.log('fatal-looking info line: could not open save 8');
+      for (let i = 0; i < 1000; i++) console.log('boot noise ' + i);
+      window.WiiCompiledUI.showError('manual', 'trigger');
+    });
+    const details = await page.inputValue('#error-details');
+    const [head, tail] = details.split('--- last ');
+    check(head.includes('first occurrence of each distinct error-like console line'), 'report has a "first occurrence" section');
+    check(head.includes('mount failed: manifest HTTP # for disc-manifest.json') === false && head.includes('mount failed: manifest HTTP 404 for disc-manifest.json'),
+      'the early root-cause error survives 1000 noise lines');
+    check(!tail.includes('mount failed') && tail.includes('boot noise 999'), 'the root cause is no longer in the last-200 tail (so it only survives via the first-error section)');
+    check((head.match(/read failed: offset=/g) || []).length === 1 && /read failed: offset=0x1000 length=100 code=-2 +\(x3\)/.test(head),
+      'errors differing only in numbers are deduplicated with a count');
+    check((head.match(/could not open save/g) || []).length === 1, 'error-like text at LOG level is kept once (numbers stripped)');
+    check(!head.includes('benign warning line'), 'ordinary warnings are not treated as errors');
+    await page.context().close();
+
+    const page2 = await newPage();
+    await page2.goto(base);
+    await waitPhase(page2, 'ready');
+    await page2.evaluate(() => {
+      const word = (i) => String.fromCharCode(97 + (i % 26)) + String.fromCharCode(97 + ((i / 26) | 0) % 26) + String.fromCharCode(97 + ((i / 676) | 0));
+      for (let i = 0; i < 150; i++) console.error('distinct failure kind ' + word(i));
+      window.WiiCompiledUI.showError('manual', 'trigger');
+    });
+    const d2 = await page2.inputValue('#error-details');
+    const head2 = d2.split('--- last ')[0];
+    const kinds = (head2.match(/distinct failure kind /g) || []).length;
+    check(kinds === 100 && /51 more kinds not kept/.test(head2), `distinct error kinds are capped at 100 (kept ${kinds}) and the report counts the rest`);
+    await page2.context().close();
   }
 
   // 4. Compatibility failures -----------------------------------------------------------------
@@ -383,6 +425,118 @@ try {
     await startAndRun(page);
     check((await productSeen(page)).id === 'RetroRewind', 'selection works with localStorage blocked');
     await page.context().close();
+  }
+
+  // 7. Save-store banner (another tab owns the saves) -------------------------------------------------
+  {
+    const page = await newPage({ viewport: { width: 360, height: 640 } });
+    await page.goto(base + '?saves=readonly');
+    await startAndRun(page);
+    check(await page.isVisible('#save-banner'), 'read-only save store: banner shown');
+    check((await page.textContent('#save-banner')).includes("This game is open in another tab; progress here won't be saved"), 'banner text says progress will not be saved');
+    check(await noHScroll(page), 'phone: no horizontal scroll with the save banner');
+    await shot(page, '13-save-banner');
+    await page.click('#save-banner button:has-text("Dismiss")');
+    check(!(await page.isVisible('#save-banner')), 'banner can be dismissed');
+    await page.context().close();
+    const page2 = await newPage();
+    await page2.goto(base);
+    await startAndRun(page2);
+    check((await page2.locator('#save-banner').count()) === 0, 'no banner when this tab owns the saves');
+    await page2.context().close();
+  }
+
+  // 8. Content-hashed, precompressed wasm (products.json "wasm" + size fields) -----------------------------
+  {
+    const hashedSite = fs.mkdtempSync(path.join(os.tmpdir(), 'wc-hashed-'));
+    fs.cpSync(siteDir, hashedSite, { recursive: true });
+    fs.writeFileSync(path.join(hashedSite, 'products.json'), JSON.stringify([
+      { id: 'WiiCompiled', title: 'Mario Kart Wii', glue: 'WiiCompiled.js' }]));
+    const tool = spawnSync('python3', [path.join(webDir, 'tools', 'precompress_dist.py'), hashedSite, '--no-brotli', '-q'], { encoding: 'utf8' });
+    check(tool.status === 0, 'precompress_dist.py runs on the test site ' + (tool.stderr || ''));
+    const prods = JSON.parse(fs.readFileSync(path.join(hashedSite, 'products.json'), 'utf8'));
+    const wasmName = prods[0].wasm;
+    check(/^WiiCompiled\.[0-9a-f]{8}\.wasm$/.test(wasmName) && prods[0].glue === 'WiiCompiled.js', `products.json names a hashed wasm and keeps the glue (${wasmName})`);
+    check(prods[0].wasmSize === fs.statSync(path.join(hashedSite, wasmName)).size && prods[0].wasmGzSize > 0 && prods[0].wasmGzSize < prods[0].wasmSize, 'products.json records raw and gzip sizes');
+    check(!fs.existsSync(path.join(hashedSite, 'WiiCompiled.wasm')), 'the unhashed wasm is gone from the site');
+
+    const port2 = port + 2100;
+    const server2 = spawn('python3', [path.join(webDir, 'serve.py'), '--dir', hashedSite, '--port', String(port2), '-q'], { stdio: 'inherit' });
+    const base2 = `http://127.0.0.1:${port2}/`;
+    for (let i = 0; i < 50; i++) {
+      try { if ((await fetch(base2)).ok) break; } catch { /* not up yet */ }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    try {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', () => {});
+      const seen = [];
+      page.on('response', (r) => { const u = new URL(r.url()).pathname; if (u.endsWith('.wasm') || u.endsWith('.json')) seen.push({ u, h: r.headers(), status: r.status() }); });
+      const percents = [];
+      await page.exposeFunction('__pct', (v) => percents.push(v));
+      await page.addInitScript(() => {
+        new MutationObserver(() => {
+          const v = document.getElementById('progress')?.getAttribute('aria-valuenow');
+          if (v != null) window.__pct(Number(v));
+        }).observe(document, { subtree: true, attributes: true, attributeFilter: ['aria-valuenow'] });
+      });
+      await page.goto(base2);
+      await waitPhase(page, 'ready');
+      const w = seen.find((r) => r.u.endsWith('.wasm'));
+      check(w && w.u === '/' + wasmName, `the page fetched the hashed wasm (${w && w.u})`);
+      check(w && w.h['content-encoding'] === 'gzip' && w.h['vary'] === 'Accept-Encoding', 'wasm arrived gzip-encoded with Vary');
+      check(w && w.h['cache-control'] === 'public, max-age=31536000, immutable', 'hashed wasm is cached immutably');
+      check(w && Number(w.h['content-length']) === prods[0].wasmGzSize, 'Content-Length is the compressed size');
+      check(seen.every((r) => !r.u.endsWith('/WiiCompiled.wasm')), 'the unhashed wasm name is never requested');
+      const pj = seen.find((r) => r.u === '/products.json');
+      check(pj && pj.h['cache-control'] === 'no-cache', 'products.json is revalidated every time');
+      check(percents.length > 0 && percents.every((v) => v >= 0 && v <= 100), `progress stays within 0..100 with compressed transfer (${percents.length} samples, max ${Math.max(...percents)})`);
+      check(/Ready \([\d.]+ MiB downloaded\)/.test(await page.textContent('#status')), 'ready status shown');
+      await page.click('#btn-start');
+      await waitPhase(page, 'running');
+      check(await page.evaluate(() => Module.wasmBinary.byteLength) === prods[0].wasmSize, 'the glue got the decoded (raw) wasm bytes');
+      check(await page.evaluate(() => Module.locateFile('WiiCompiled.wasm', '/p/')) === wasmName, 'locateFile maps the glue\'s wasm name to the hashed file');
+      // second visit: the immutable file comes from the browser cache
+      const page2 = await ctx.newPage();
+      await page2.goto(base2);
+      await waitPhase(page2, 'ready');
+      const cached = await page2.evaluate((n) => performance.getEntriesByType('resource').filter((e) => e.name.endsWith(n)).map((e) => e.transferSize), wasmName);
+      console.log(`INFO second visit wasm transferSize=${JSON.stringify(cached)}`);
+      check(cached.length === 1 && cached[0] === 0, 'second visit serves the hashed wasm from the browser cache (transferSize 0)');
+      await ctx.close();
+
+      // stale/understated size field: progress must fall back to indeterminate instead of exceeding 100%
+      const bad = JSON.parse(JSON.stringify(prods));
+      bad[0].wasmSize = 1000;
+      const ctx2 = await browser.newContext();
+      const page3 = await ctx2.newPage();
+      await page3.route('**/products.json', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(bad) }));
+      const pct3 = [];
+      await page3.exposeFunction('__pct', (v) => pct3.push(v));
+      await page3.addInitScript(() => {
+        new MutationObserver(() => { const v = document.getElementById('progress')?.getAttribute('aria-valuenow'); if (v != null) window.__pct(Number(v)); })
+          .observe(document, { subtree: true, attributes: true, attributeFilter: ['aria-valuenow'] });
+      });
+      await page3.goto(base2);
+      await waitPhase(page3, 'ready');
+      check(pct3.every((v) => v <= 100), 'wrong recorded size never shows progress above 100%');
+      await ctx2.close();
+
+      // a server that does not compress: no Content-Encoding, progress still right
+      fs.rmSync(path.join(hashedSite, wasmName + '.gz'));
+      const ctx3 = await browser.newContext();
+      const page4 = await ctx3.newPage();
+      const seen4 = [];
+      page4.on('response', (r) => { if (r.url().endsWith('.wasm')) seen4.push(r.headers()); });
+      await page4.goto(base2);
+      await waitPhase(page4, 'ready');
+      check(seen4.length === 1 && !seen4[0]['content-encoding'] && Number(seen4[0]['content-length']) === prods[0].wasmSize, 'without a .gz sibling the raw wasm is served and the page still works');
+      await ctx3.close();
+    } finally {
+      server2.kill();
+      fs.rmSync(hashedSite, { recursive: true, force: true });
+    }
   }
 } catch (e) {
   console.log('FAIL unexpected exception: ' + (e && e.stack || e));

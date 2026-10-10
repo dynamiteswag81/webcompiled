@@ -250,6 +250,7 @@ project=$workspace/projects/mkwii/recomp.yml
 site_src=$workspace/web/site
 [[ -f "$site_src/index.html" ]] || fail "frontend not found: $site_src/index.html"
 manifest_tool=$workspace/web/tools/make_disc_manifest.py
+precompress_tool=$workspace/web/tools/precompress_dist.py
 [[ -f "$manifest_tool" ]] || fail "disc manifest generator is missing: $manifest_tool (expected CLI: make_disc_manifest.py <disc_root> <out.json>)"
 
 # Retro Rewind input -----------------------------------------------------------
@@ -580,10 +581,16 @@ else
     # A previous build of this dist dir may have had Retro Rewind; do not leave it half there.
     rm -rf "$out_dir/$MODS_DIR_NAME"
     rm -f "$out_dir/$RETRO_TARGET".js "$out_dir/$RETRO_TARGET".wasm "$out_dir/$RETRO_TARGET".data "$out_dir/$RETRO_TARGET".wasm.map
+    rm -f "$out_dir/$RETRO_TARGET".????????.wasm "$out_dir/$RETRO_TARGET".????????.wasm.gz "$out_dir/$RETRO_TARGET".????????.wasm.br
 fi
 products_json+=']'
 printf '%s\n' "$products_json" > "$out_dir/products.json"
-info "products.json: $products_json"
+
+# Content-hash the wasm files (cache forever), write .gz/.br next to them and record the names and
+# sizes in products.json. See docs/web-hosting.md ("Caching and compression").
+step "Hashing and precompressing the wasm files"
+"$python_bin" "$precompress_tool" "$out_dir" || fail "precompress_dist.py failed"
+info "products.json: $(cat "$out_dir/products.json")"
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -598,5 +605,6 @@ cat <<EOF
     Serve:       $python_bin $workspace/web/serve.py --dir "$out_dir"      # http://127.0.0.1:8080/
     Products:    $(grep -o '"id":"[A-Za-z]*"' "$out_dir/products.json" | cut -d'"' -f4 | tr '\n' ' ')
     Host:        any static server with HTTP Range support (nginx, Caddy, ...), serving .wasm as application/wasm.
+                 Other devices need HTTPS for WebGPU: add --https --lan to serve.py (docs/web-hosting.md).
     Players need Chrome/Edge 137+ (WebGPU + JSPI).
 EOF

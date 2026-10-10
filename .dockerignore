@@ -9,6 +9,7 @@
 # Host drop folder and every kind of local build/translation output
 web/game
 web/dist
+web/.certs
 web/build
 /Assets
 /assets

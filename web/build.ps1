@@ -327,6 +327,7 @@ if (-not (Test-Path -LiteralPath $project -PathType Leaf)) { Stop-Build "transla
 $siteSrc = Join-Path $workspace 'web/site'
 if (-not (Test-Path -LiteralPath (Join-Path $siteSrc 'index.html') -PathType Leaf)) { Stop-Build "frontend not found: $(Join-Path $siteSrc 'index.html')" }
 $manifestTool = Join-Path $workspace 'web/tools/make_disc_manifest.py'
+$precompressTool = Join-Path $workspace 'web/tools/precompress_dist.py'
 if (-not (Test-Path -LiteralPath $manifestTool -PathType Leaf)) {
     Stop-Build "disc manifest generator is missing: $manifestTool (expected CLI: make_disc_manifest.py <disc_root> <out.json>)"
 }
@@ -671,10 +672,20 @@ if ($buildRetro) {
     foreach ($suffix in @('.js', '.wasm', '.data', '.wasm.map')) {
         Remove-Item -LiteralPath (Join-Path $outDir "$RetroTarget$suffix") -Force -ErrorAction SilentlyContinue
     }
+    # Content-hashed copies (and their .gz/.br) of an earlier build.
+    Get-ChildItem -LiteralPath $outDir -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match ('^' + [regex]::Escape($RetroTarget) + '\.[0-9a-f]{8}\.wasm(\.gz|\.br)?$') } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
 }
 $productsJson = ConvertTo-Json -InputObject @($products) -Compress -Depth 4
 [System.IO.File]::WriteAllText((Join-Path $outDir 'products.json'), $productsJson + "`n")
-Write-Info "products.json: $productsJson"
+
+# Content-hash the wasm files (cache forever), write .gz/.br next to them and record the names and
+# sizes in products.json. See docs/web-hosting.md ("Caching and compression").
+Write-Step 'Hashing and precompressing the wasm files'
+& $pythonExe @pythonLead $precompressTool $outDir
+if ($LASTEXITCODE -ne 0) { Stop-Build 'precompress_dist.py failed' }
+Write-Info ('products.json: ' + ([System.IO.File]::ReadAllText((Join-Path $outDir 'products.json'))).Trim())
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -691,5 +702,6 @@ Write-Host @"
     Total size:  $(Get-DirSize $outDir)  (disc tree $(Get-DirSize $discOut), streamed lazily over HTTP Range)
     Serve:       $pythonExe $($pythonLead -join ' ') "$serveScript" --dir "$outDir"      # http://127.0.0.1:8080/
     Host:        any static server with HTTP Range support (nginx, Caddy, ...), serving .wasm as application/wasm.
+                 Other devices need HTTPS for WebGPU: add --https --lan to serve.py (docs/web-hosting.md).
     Players need Chrome/Edge 137+ (WebGPU + JSPI).
 "@

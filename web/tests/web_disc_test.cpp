@@ -9,7 +9,11 @@
 //   --missing=<relPath>           in the manifest, but the server answers 404
 //   --truncated=<relPath>:<size>  in the manifest, but the server only has <size> bytes
 //   --norange=<relPath>           the server ignores Range for this file (sends 200 + body)
-//   --persist=<none|write|verify> IDBFS phase; --nonce=<text> ties the two browser runs together
+//   --persist=<none|write|verify|readonly|nolocks> IDBFS phase; --nonce=<text> ties the browser runs
+//                                 together. write: first tab (owns the Web Lock) writes saves;
+//                                 readonly: a second tab at the same time must be read-only;
+//                                 verify: a later tab sees exactly what `write` stored (nothing from
+//                                 `readonly`); nolocks: navigator.locks removed, old behaviour.
 #include "hle/dvd_contract.h"
 #include "hle/web_disc.h"
 
@@ -25,6 +29,7 @@
 
 extern "C" int mkw_storage_flush(void);
 extern "C" int mkw_storage_is_persistent(void);
+extern "C" int mkw_storage_is_readonly(void);
 
 namespace {
 
@@ -376,21 +381,46 @@ int main(int argc, char** argv) {
 
     // --- Save store (IDBFS) --------------------------------------------------------------------
     const std::string home = "/home/web_user/.local/share/web_disc_test";
+    const std::string flushedPath = home + "/flushed.txt";
+    const std::string autosavedPath = home + "/autosaved.txt";
+    const std::string roPath = home + "/readonly-tab.txt";
     if (persist == "none") {
         CHECK(mkw_storage_is_persistent() == 0, "no IndexedDB here: saves stay in memory");
+        CHECK(mkw_storage_is_readonly() == 0, "no IndexedDB here: not read-only either");
         CHECK(mkw_storage_flush() == 0, "flush without a persistent store reports 0");
     } else if (persist == "write") {
         CHECK(mkw_storage_is_persistent() == 1, "IDBFS should be mounted at /home/web_user");
-        CHECK(WriteText(home + "/flushed.txt", "flushed-" + nonce), "write flushed file");
+        CHECK(mkw_storage_is_readonly() == 0, "the first tab owns the save store");
+        CHECK(WriteText(flushedPath, "flushed-" + nonce), "write flushed file");
         CHECK(mkw_storage_flush() == 1, "explicit flush");
         // Not flushed explicitly: IDBFS autoPersist must store it once the event loop runs.
-        CHECK(WriteText(home + "/autosaved.txt", "auto-" + nonce), "write autosaved file");
+        CHECK(WriteText(autosavedPath, "auto-" + nonce), "write autosaved file");
         std::printf("IDBFS: wrote save files\n");
+    } else if (persist == "readonly") {
+        // Another tab (persist=write) is alive and holds the lock: this tab sees its saves but
+        // must never write anything back.
+        CHECK(mkw_storage_is_persistent() == 0, "second tab must not persist");
+        CHECK(mkw_storage_is_readonly() == 1, "second tab must be read-only");
+        CHECK(ReadText(flushedPath) == "flushed-" + nonce, "read-only tab still sees the saves: '%s'", ReadText(flushedPath).c_str());
+        CHECK(ReadText(autosavedPath) == "auto-" + nonce, "read-only tab sees autosaved file: '%s'", ReadText(autosavedPath).c_str());
+        // Writes that would clobber the owner's saves, and a new file; flush must refuse.
+        CHECK(WriteText(flushedPath, "TAMPERED-" + nonce), "read-only tab can still write in memory");
+        CHECK(WriteText(roPath, "readonly-" + nonce), "write file in the read-only tab");
+        CHECK(mkw_storage_flush() == 0, "flush in a read-only tab reports 0");
+        std::printf("IDBFS: read-only tab wrote in memory only\n");
     } else if (persist == "verify") {
         CHECK(mkw_storage_is_persistent() == 1, "IDBFS should be mounted at /home/web_user");
-        CHECK(ReadText(home + "/flushed.txt") == "flushed-" + nonce, "flushed file survived reload: '%s'", ReadText(home + "/flushed.txt").c_str());
-        CHECK(ReadText(home + "/autosaved.txt") == "auto-" + nonce, "autosaved file survived reload: '%s'", ReadText(home + "/autosaved.txt").c_str());
+        CHECK(mkw_storage_is_readonly() == 0, "after the other tabs closed this one owns the save store");
+        CHECK(ReadText(flushedPath) == "flushed-" + nonce, "flushed file survived reload: '%s'", ReadText(flushedPath).c_str());
+        CHECK(ReadText(autosavedPath) == "auto-" + nonce, "autosaved file survived reload: '%s'", ReadText(autosavedPath).c_str());
+        CHECK(!std::filesystem::exists(roPath), "a read-only tab must not have written readonly-tab.txt");
         std::printf("IDBFS: save files persisted across reload\n");
+    } else if (persist == "nolocks") {
+        // The page removed navigator.locks: behave like before, persistent and writable.
+        CHECK(mkw_storage_is_persistent() == 1, "without Web Locks the store is still persistent");
+        CHECK(mkw_storage_is_readonly() == 0, "without Web Locks nothing is read-only");
+        CHECK(ReadText(flushedPath) == "flushed-" + nonce, "saves visible without Web Locks: '%s'", ReadText(flushedPath).c_str());
+        std::printf("IDBFS: no Web Locks, persistent as before\n");
     }
 
     const auto stats = WebDisc::GetStats();

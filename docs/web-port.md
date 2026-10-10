@@ -181,11 +181,14 @@ unless it says "local" (verified by the local session with the real game files).
 * **Translator `#embed` companions:** `dotnet test` 645/645; the emitted
   `data_sections_init_blobs.cpp` compiles with em++ and its bytes read back
   equal to the `.bin` files under Node.
-* **Site tooling:** `web/serve.py` (Range/416/HEAD/MIME) passes
-  `python3 -m unittest discover -s web/tests -p 'test_*.py'` (18 tests);
+* **Site tooling:** `web/serve.py` (Range/416/HEAD/MIME, precompressed `.br`/`.gz`
+  siblings, immutable caching of hashed wasm, `--https` with a generated or supplied certificate),
+  `web/selfsigned_cert.py` and `web/tools/precompress_dist.py` pass
+  `python3 -m unittest discover -s web/tests -p 'test_*.py'` (55 tests);
   the page passes `node web/tests/frontend_test.mjs` (Playwright, headless
-  Chromium: compat check, download progress, start gate, help, error overlay,
-  phone width).
+  Chromium: compat check, download progress with hashed/compressed wasm, start gate, help,
+  error overlay and its retention of early errors, save-store banner, phone width);
+  `node web/tests/https_browser_test.mjs` checks the HTTPS secure-context claim in Chromium.
 
 ### Done (code in this branch)
 * ISA/FP/memory headers for wasm (`MKW_HOST_X86_SIMD`, no `-mfma`, software FP
@@ -218,6 +221,10 @@ unless it says "local" (verified by the local session with the real game files).
   `Module.mkwDiscManifestUrl`, `mkwDiscBaseUrl`, `mkwDiscRetries`.
 * Saves: IDBFS on `/home/web_user`, mounted before `main`, synced after file
   writes and when the page is hidden. Run logs go to `/tmp` (not persisted).
+  The mount first takes an exclusive Web Lock (`webcompiled-saves`, held for the life of the page,
+  inside the same run dependency, so it cannot stall startup): a second tab of the same origin runs
+  read-only (`Module.onMkwStorageReadOnly`, banner in `web/site/main.js`) and never writes to
+  IndexedDB; without `navigator.locks` it behaves as before and warns in the console.
 * Fatal reports reach the page (`mkw_host_report_fatal` → `Module.onMkwFatal`).
 
 * Drop-in hosting: `web/host.sh` / `web/host.ps1` (game files dropped into

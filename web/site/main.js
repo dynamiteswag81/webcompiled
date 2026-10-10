@@ -7,7 +7,10 @@
 //   2. read products.json (optional); with several products ask which one to play (or honour
 //      ?product=ID); the choice sets Module.mkwProduct and which glue/.wasm pair is used
 //   3. fetch the .wasm ourselves so we can show real download progress; it is handed to the
-//      Emscripten glue through Module.wasmBinary, so it is not downloaded twice
+//      Emscripten glue through Module.wasmBinary, so it is not downloaded twice. products.json
+//      names a content-hashed file (WiiCompiled.<sha8>.wasm) that servers may cache forever and
+//      compress (Content-Encoding br/gzip); progress is measured in decoded bytes against the
+//      recorded raw size, so it is right with or without compressed transfer
 //   4. show "Click to start" (a user gesture is required for audio to be allowed to start)
 //   5. on click, load the glue script; Module.setStatus / monitorRunDependencies keep the
 //      loading screen updated until the runtime is initialized
@@ -21,8 +24,11 @@
   const DEFAULT_GLUE_SCRIPT = 'WiiCompiled.js';
   /**
    * Optional product list written by web/build.sh / host.sh next to index.html:
-   *   [{"id":"WiiCompiled","title":"Mario Kart Wii","glue":"WiiCompiled.js"},
-   *    {"id":"RetroRewind","title":"Retro Rewind","glue":"RetroRewind.js","modRoot":"mods/RetroRewind6"}]
+   *   [{"id":"WiiCompiled","title":"Mario Kart Wii","glue":"WiiCompiled.js",
+   *     "wasm":"WiiCompiled.1a2b3c4d.wasm","wasmSize":127926271,"wasmGzSize":41000000,"wasmBrSize":33000000},
+   *    {"id":"RetroRewind","title":"Retro Rewind","glue":"RetroRewind.js","modRoot":"mods/RetroRewind6", ...}]
+   * "wasm" (content-hashed file name; absent = <glue minus .js>.wasm, always revalidated) and the
+   * size fields (bytes: raw, gzip, brotli) are written by web/tools/precompress_dist.py.
    * With more than one entry the start screen asks which to play; with one entry or no file the
    * page behaves as a single-product site.
    */
@@ -30,7 +36,10 @@
   const LAST_PRODUCT_KEY = 'wiicompiled.product';
   /** The glue script and its wasm module (<glue minus .js>.wasm) of the chosen product. */
   let glueScript = DEFAULT_GLUE_SCRIPT;
-  let wasmFile = wasmNameFor(glueScript);
+  let wasmFile = wasmNameFor(glueScript); // the name the glue asks for (also used in messages)
+  let wasmUrl = wasmFile;                 // what is actually fetched (content-hashed when known)
+  let wasmHashed = false;
+  let wasmSizes = { raw: 0, gz: 0, br: 0 };
   function wasmNameFor(glue) { return glue.replace(/\.js$/i, '') + '.wasm'; }
   /**
    * Set to the exported factory name (e.g. 'createWiiCompiled') if the build uses
@@ -38,8 +47,15 @@
    * reads the global `Module` object defined below.
    */
   const MODULE_FACTORY = null;
-  /** Number of console lines kept for the error report. */
+  /** Number of (most recent) console lines kept for the error report. */
   const LOG_LINES = 200;
+  /**
+   * Besides the last LOG_LINES lines, the report keeps the first occurrence of each distinct
+   * error-like line (numbers stripped when comparing), so boot noise cannot push out the root cause.
+   * Number of distinct ones kept, and the longest text stored for each.
+   */
+  const MAX_FIRST_ERRORS = 100;
+  const MAX_ERROR_TEXT = 1500;
 
   // ---------------------------------------------------------------------------------------
   // Console capture (installed first so the error report contains everything)
@@ -59,11 +75,31 @@
     }
   }
 
+  // First occurrence of each distinct error-like console entry: key -> {stamp, level, text, count}.
+  const firstErrors = new Map();
+  let droppedErrorKinds = 0;
+  const ERROR_LIKE = /\b(error|errors|exception|fatal|abort(ed)?|trap|unreachable|panic|assert(ion)?|uncaught|failed|failure|cannot|can't|could not|unable|out of memory|oom|corrupt|invalid)\b/i;
+
+  /** Same message with numbers (addresses, sizes, offsets, counters, timestamps) normalized. */
+  function errorKey(text) {
+    return String(text).split('\n', 1)[0].replace(/0x[0-9a-f]+/gi, '#').replace(/\d+(\.\d+)?/g, '#').trim().slice(0, 300);
+  }
+
+  function noteError(stamp, level, text) {
+    const key = errorKey(text);
+    const hit = firstErrors.get(key);
+    if (hit) { hit.count++; return; }
+    if (firstErrors.size >= MAX_FIRST_ERRORS) { droppedErrorKinds++; return; }
+    const trimmed = text.length > MAX_ERROR_TEXT ? text.slice(0, MAX_ERROR_TEXT) + ' …(truncated)' : text;
+    firstErrors.set(key, { stamp, level: level.trim(), text: trimmed, count: 1 });
+  }
+
   function pushLog(level, args) {
     const secs = ((Date.now() - t0) / 1000).toFixed(2).padStart(8, ' ');
     const text = Array.prototype.map.call(args, formatArg).join(' ');
     for (const line of text.split('\n')) logLines.push('[' + secs + '] ' + level + ' ' + line);
     if (logLines.length > LOG_LINES) logLines.splice(0, logLines.length - LOG_LINES);
+    if (level.trim() === 'ERROR' || ERROR_LIKE.test(text.split('\n', 1)[0])) noteError(secs, level, text);
   }
 
   for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
@@ -164,6 +200,16 @@
       if (rec.stack) out.push(rec.stack);
       out.push('');
     }
+    let total = droppedErrorKinds;
+    for (const e of firstErrors.values()) total += e.count;
+    out.push('--- first occurrence of each distinct error-like console line (' + firstErrors.size +
+      ' kinds, ' + total + ' lines' + (droppedErrorKinds ? ', ' + droppedErrorKinds + ' more kinds not kept' : '') + ') ---');
+    for (const e of firstErrors.values()) {
+      const lines = e.text.split('\n');
+      out.push('[' + e.stamp + '] ' + e.level.padEnd(5, ' ') + ' ' + lines[0] + (e.count > 1 ? '   (x' + e.count + ')' : ''));
+      for (let i = 1; i < lines.length; i++) out.push('    ' + lines[i]);
+    }
+    out.push('');
     out.push('--- last ' + logLines.length + ' console lines ---');
     for (const line of logLines) out.push(line);
     return out.join('\n');
@@ -440,10 +486,15 @@
       if (!SAFE_PATH.test(trimmed)) return null;
       modRoot = trimmed;
     }
+    // Content-hashed wasm name and its sizes (web/tools/precompress_dist.py); all optional.
+    const wasm = typeof raw.wasm === 'string' && /\.wasm$/i.test(raw.wasm) && SAFE_PATH.test(raw.wasm) ? raw.wasm : null;
+    const size = (v) => (Number.isSafeInteger(v) && v > 0 ? v : 0);
     return {
       id: id,
       title: typeof raw.title === 'string' && raw.title ? raw.title : id,
       glue: glue,
+      wasm: wasm,
+      wasmSizes: wasm ? { raw: size(raw.wasmSize), gz: size(raw.wasmGzSize), br: size(raw.wasmBrSize) } : { raw: 0, gz: 0, br: 0 },
       modRoot: modRoot,
       // Same naming build.sh uses for the disc: <modRoot>-manifest.json next to the mod tree.
       modManifest: modRoot ? modRoot + '-manifest.json' : null,
@@ -452,7 +503,8 @@
 
   /** products.json -> array of products; falls back to the single default product. */
   async function loadProducts() {
-    const fallback = [{ id: 'WiiCompiled', title: 'Mario Kart Wii', glue: DEFAULT_GLUE_SCRIPT, modRoot: null, modManifest: null }];
+    const fallback = [{ id: 'WiiCompiled', title: 'Mario Kart Wii', glue: DEFAULT_GLUE_SCRIPT, wasm: null,
+      wasmSizes: { raw: 0, gz: 0, br: 0 }, modRoot: null, modManifest: null }];
     try {
       const resp = await fetch(PRODUCTS_FILE, { cache: 'no-cache' });
       if (!resp.ok) return fallback;
@@ -470,6 +522,9 @@
   function applyProduct(product) {
     glueScript = product.glue;
     wasmFile = wasmNameFor(glueScript);
+    wasmUrl = product.wasm || wasmFile;
+    wasmHashed = !!product.wasm;
+    wasmSizes = product.wasmSizes;
     // Read by the runtime (web/js libraries) to find the mod tree to overlay on the disc.
     Module.mkwProduct = { id: product.id, modRoot: product.modRoot, modManifest: product.modManifest };
     document.documentElement.dataset.product = product.id;
@@ -531,9 +586,18 @@
   async function fetchWasm() {
     setStatus('Downloading ' + wasmFile + '…');
     setProgress(0);
-    const resp = await fetch(wasmFile, { cache: 'no-cache' });
-    if (!resp.ok) throw new Error('Could not download ' + wasmFile + ' (HTTP ' + resp.status + ' ' + resp.statusText + ')');
-    const total = parseInt(resp.headers.get('Content-Length') || '0', 10) || 0;
+    // A content-hashed name never changes content, so the browser cache may keep it; the plain name
+    // (older builds) is revalidated every time.
+    const resp = await fetch(wasmUrl, { cache: wasmHashed ? 'default' : 'no-cache' });
+    if (!resp.ok) throw new Error('Could not download ' + wasmUrl + ' (HTTP ' + resp.status + ' ' + resp.statusText + ')');
+    // With Content-Encoding (br/gzip) Content-Length counts the compressed bytes while the stream
+    // yields decoded ones, so progress runs against the recorded raw size and the compressed size is
+    // only shown as the amount that travels over the network.
+    const encoding = (resp.headers.get('Content-Encoding') || '').trim().toLowerCase();
+    const length = parseInt(resp.headers.get('Content-Length') || '0', 10) || 0;
+    let total = wasmSizes.raw || (encoding ? 0 : length);
+    const wire = encoding ? (encoding === 'br' ? wasmSizes.br : /^(x-)?gzip$/.test(encoding) ? wasmSizes.gz : 0) || length : 0;
+    const wireNote = wire ? ' (' + mib(wire) + ' compressed transfer)' : '';
     if (!resp.body || !resp.body.getReader) {
       setProgress(null);
       return await resp.arrayBuffer();
@@ -546,12 +610,13 @@
       if (done) break;
       chunks.push(value);
       received += value.length;
+      if (total && received > total) total = 0; // recorded size is stale: fall back to indeterminate
       if (total) {
         setProgress(received / total);
-        setStatus('Downloading ' + wasmFile + ': ' + mib(received) + ' / ' + mib(total));
+        setStatus('Downloading ' + wasmFile + ': ' + mib(received) + ' / ' + mib(total) + wireNote);
       } else {
         setProgress(null);
-        setStatus('Downloading ' + wasmFile + ': ' + mib(received));
+        setStatus('Downloading ' + wasmFile + ': ' + mib(received) + wireNote);
       }
     }
     const bytes = new Uint8Array(received);
@@ -572,7 +637,7 @@
     print: function () { console.log.apply(console, arguments); },
     printErr: function () { console.error.apply(console, arguments); },
     locateFile: function (path, prefix) {
-      if (path === wasmFile) return wasmFile;
+      if (path === wasmFile) return wasmUrl;
       return (prefix || '') + path;
     },
     setStatus: function (text) {
@@ -614,6 +679,9 @@
     onAbort: function (what) {
       showError('Module.onAbort', 'Aborted: ' + (what == null ? '(no reason)' : formatArg(what)), new Error().stack);
     },
+    onMkwStorageReadOnly: function (message) { // raised by web/js/library_mkw_dvd.js (another tab owns the saves)
+      showSaveBanner(message);
+    },
     onMkwFatal: function (message) { // raised by web/js/library_mkw_host.js
       showError('guest-fatal', message);
     },
@@ -623,6 +691,37 @@
     },
   };
   window.Module = Module;
+
+  // Shown when another tab of this site owns the save store (Web Locks): this tab only reads the
+  // saves. Built in script so it works with any index.html.
+  function showSaveBanner(message) {
+    if (document.getElementById('save-banner')) return;
+    const style = document.createElement('style');
+    style.textContent =
+      '#save-banner{position:fixed;left:0;right:0;top:0;z-index:50;display:flex;flex-wrap:wrap;gap:8px 12px;' +
+      'align-items:center;justify-content:center;padding:8px max(16px,env(safe-area-inset-left));' +
+      'background:#3a2a0a;color:#ffe9b8;border-bottom:1px solid var(--warn,#f0b14a);font-size:.9rem;text-align:center}' +
+      '#save-banner[hidden]{display:none}' +
+      '#save-banner button{font:inherit;padding:3px 10px;border-radius:999px;border:1px solid var(--warn,#f0b14a);' +
+      'background:transparent;color:inherit;cursor:pointer}';
+    const bar = document.createElement('div');
+    bar.id = 'save-banner';
+    bar.setAttribute('role', 'status');
+    const text = document.createElement('span');
+    text.textContent = message || "This game is open in another tab; progress here won't be saved.";
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Reload';
+    retry.title = 'Try again (works once the other tab is closed)';
+    retry.addEventListener('click', () => location.reload());
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Dismiss';
+    close.addEventListener('click', () => { bar.hidden = true; });
+    bar.append(text, retry, close);
+    document.head.append(style);
+    document.body.append(bar);
+  }
 
   // Small hooks for runtime code (JS libraries, EM_ASM) that wants to drive the loading screen,
   // e.g. while the first disc reads stream in: WiiCompiledUI.showLoading('Reading disc…', 0.4).
