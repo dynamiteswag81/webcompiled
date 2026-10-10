@@ -200,6 +200,10 @@ inline bool Ensure(const std::filesystem::path& root, std::string& error,
     if (written) {
 #ifdef _WIN32
         published = MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
+#elif defined(__EMSCRIPTEN__)
+        // MEMFS/IDBFS have no hard links. One game runs per page and the
+        // destination was absent above, so a plain rename publishes it.
+        published = ::rename(temporary.c_str(), path.c_str()) == 0;
 #else
         published = ::link(temporary.c_str(), path.c_str()) == 0;
 #endif

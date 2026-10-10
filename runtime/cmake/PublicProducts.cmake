@@ -230,10 +230,16 @@ function(mkw_configure_web_product target)
         "-sJSPI_EXPORTS=main,mkw_host_context_entry"
         -sENVIRONMENT=web
         -sALLOW_MEMORY_GROWTH=1
+        # The translated game's static data alone is ~24 MB (above the 16 MB default), and the
+        # guest MEM1/MEM2 stores (152 MiB) are allocated at startup anyway.
+        -sINITIAL_MEMORY=256MB
         -sMAXIMUM_MEMORY=4GB
         # The main stack hosts the scheduler; guest threads own their own shadow stacks.
         -sSTACK_SIZE=8MB
         -sEXPORTED_RUNTIME_METHODS=FS,ENV
+        # <target>.js.symbols maps wasm function indices to names, so a stack from a player's
+        # error report ("wasm-function[N]") can be symbolized without shipping a name section.
+        --emit-symbol-map
         -lidbfs.js
         "--embed-file=${dsp_rom}@/app/dsp_coef.bin"
         "--embed-file=${bootstrap}@/app/wii_bootstrap")
