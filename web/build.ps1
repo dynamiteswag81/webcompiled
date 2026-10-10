@@ -1,7 +1,7 @@
-#requires -Version 7.0
+#requires -Version 5.1
 <#
 .SYNOPSIS
-    WiiCompiled for the Web - operator pipeline (PowerShell 7, Windows / Linux / macOS).
+    WiiCompiled for the Web - operator pipeline (Windows PowerShell 5.1 or PowerShell 7; Windows / Linux / macOS).
 
 .DESCRIPTION
     Takes the operator's own PAL (RMCP01) Mario Kart Wii disc image (or an already extracted DATA
@@ -49,6 +49,8 @@
                                $env:MKW_DISC_EXTRACT_CMD = 'DolphinTool extract -i {IMAGE} -o {OUT} -p DATA'
                              (paths containing spaces are fine: replacement happens after splitting)
       PYTHON                 Python 3 interpreter (default: python3, then python, then py -3)
+      MKW_CMAKE_ARGS         Extra CMake configure arguments, separated by '|' (build.bat uses this for
+                             -DCMAKE_TLS_CAINFO and the prebuilt-library package)
 
 .EXAMPLE
     pwsh web/build.ps1 D:\games\mkwii-pal.iso
@@ -71,6 +73,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'   # no progress bars (slow in Windows PowerShell 5.1, noise when output is captured)
 
 # ---------------------------------------------------------------------------
 # Settings you may want to adjust (names of the CMake target and its outputs).
@@ -94,6 +97,8 @@ $NodToolVersion = 'v2.0.0-alpha.10'  # same release the native setup downloads (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+# Windows PowerShell 5.1 has no $IsWindows variable.
+$onWindows = ($env:OS -eq 'Windows_NT')
 $scriptDir = $PSScriptRoot
 $workspace = (Resolve-Path -LiteralPath (Join-Path $scriptDir '..')).Path
 $script:stepNo = 0
@@ -142,11 +147,11 @@ while ($i -lt $rest.Count) {
     $a = [string]$rest[$i]
     switch -Regex ($a) {
         '^--?(h|help|\?)$' { Show-Usage; exit 0 }
-        '^--out$' { $i++; $Out = [string]$rest[$i] }
-        '^--build-dir$' { $i++; $BuildDir = [string]$rest[$i] }
-        '^--jobs$' { $i++; $Jobs = [int]$rest[$i] }
-        '^--skip-translate$' { $SkipTranslate = [switch]$true }
-        '^--retro-rewind$' { $i++; $RetroRewind = [string]$rest[$i] }
+        '^--out$' { $i++; $Out = [string]$rest[$i]; break }
+        '^--build-dir$' { $i++; $BuildDir = [string]$rest[$i]; break }
+        '^--jobs$' { $i++; $Jobs = [int]$rest[$i]; break }
+        '^--skip-translate$' { $SkipTranslate = [switch]$true; break }
+        '^--retro-rewind$' { $i++; $RetroRewind = [string]$rest[$i]; break }
         '^-' { Show-Usage; Stop-Build "unknown option: $a" }
         default {
             if ($DiscImage) { Stop-Build "more than one disc image given ('$DiscImage' and '$a')" }
@@ -164,7 +169,8 @@ if ($RetroRewind -and -not (Test-Path -LiteralPath $RetroRewind -PathType Contai
 if ($Jobs -lt 0) { Stop-Build '-Jobs must be a positive integer' }
 
 function Get-AbsoluteDir([string]$Path) {
-    $full = [System.IO.Path]::GetFullPath($Path, (Get-Location).ProviderPath)
+    # GetFullPath(path, basePath) is .NET Core only; combine by hand so Windows PowerShell 5.1 works too.
+    $full = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).ProviderPath, $Path))
     New-Item -ItemType Directory -Force -Path $full | Out-Null
     return $full
 }
@@ -201,6 +207,20 @@ function Get-FirstVersion([string]$Text) {
 
 function Test-Command([string]$Name) { return [bool](Get-Command $Name -ErrorAction SilentlyContinue) }
 
+# Run a native probe command and return its stdout lines, discarding stderr. Windows PowerShell 5.1
+# can turn native stderr into a terminating error under $ErrorActionPreference = 'Stop', so relax it here.
+function Get-NativeOutput([string]$Exe, [string[]]$Arguments) {
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $lines = @(& $Exe @Arguments 2>$null)
+        return $lines
+    } catch {
+        $global:LASTEXITCODE = 1
+        return @()
+    } finally { $ErrorActionPreference = $saved }
+}
+
 # Run a native command; stop the build with a message if it exits non-zero.
 function Invoke-Native([string]$What, [string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
@@ -236,7 +256,7 @@ Emscripten (emcc) was not found. Install emsdk (https://emscripten.org/docs/gett
 }
 if (-not (Test-Command 'emcmake')) { Stop-Build 'emcmake not found next to emcc; your Emscripten install looks incomplete' }
 $emccVersion = $null
-try { $emccVersion = Get-FirstVersion ((& emcc --version 2>$null | Select-Object -First 1) | Out-String) } catch { }
+try { $emccVersion = Get-FirstVersion ((Get-NativeOutput 'emcc' @('--version') | Select-Object -First 1) | Out-String) } catch { }
 if (-not $emccVersion) {
     Write-Warn "could not determine the Emscripten version; $EmscriptenRecommended is recommended"
 } elseif ($emccVersion -ne $EmscriptenRecommended) {
@@ -247,7 +267,7 @@ if (-not $emccVersion) {
 
 # .NET 8 SDK ----------------------------------------------------------------
 if (-not (Test-Command 'dotnet')) { Stop-Build '.NET SDK not found. Install the .NET 8 SDK: https://dotnet.microsoft.com/download/dotnet/8.0' }
-$sdks = @(& dotnet --list-sdks 2>$null | ForEach-Object { ($_ -split '\s+')[0] })
+$sdks = @(Get-NativeOutput 'dotnet' @('--list-sdks') | ForEach-Object { ($_ -split '\s+')[0] })
 $sdk8 = @($sdks | Where-Object { $_ -like '8.*' })
 if ($sdk8.Count -eq 0) {
     Stop-Build ".NET 8 SDK not found (installed SDKs: $($sdks -join ' ')). The translator targets net8.0; install https://dotnet.microsoft.com/download/dotnet/8.0"
@@ -271,7 +291,7 @@ $pythonCandidates = if ($env:PYTHON) { @(, @($env:PYTHON)) } else { @(, @('pytho
 foreach ($cand in $pythonCandidates) {
     if (-not (Test-Command $cand[0])) { continue }
     $leading = @($cand | Select-Object -Skip 1)
-    & $cand[0] @leading -c 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)' 2>$null
+    [void](Get-NativeOutput $cand[0] (@($leading) + @('-c', 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)')))
     if ($LASTEXITCODE -eq 0) { $pythonCmd = $cand; break }
 }
 if (-not $pythonCmd) { Stop-Build "Python 3 not found (tried: $(($pythonCandidates | ForEach-Object { $_ -join ' ' }) -join ', ')); install it or set `$env:PYTHON" }
@@ -289,7 +309,7 @@ if ($discIsTree) {
     Write-Info "disc extractor: MKW_DISC_EXTRACT_CMD ($($env:MKW_DISC_EXTRACT_CMD))"
 } else {
     $nodtoolBin = $null
-    $exeSuffix = if ($IsWindows) { '.exe' } else { '' }
+    $exeSuffix = if ($onWindows) { '.exe' } else { '' }
     if ($env:NODTOOL) {
         if (-not (Test-Path -LiteralPath $env:NODTOOL -PathType Leaf)) { Stop-Build "NODTOOL is set but is not a file: $($env:NODTOOL)" }
         $nodtoolBin = $env:NODTOOL
@@ -363,9 +383,14 @@ $buildRetro = [bool]$retroRoot
 $cpuCount = [Math]::Max([Environment]::ProcessorCount, 1)
 $memGib = 8
 try {
-    $totalBytes = [System.GC]::GetGCMemoryInfo().TotalAvailableMemoryBytes
+    $totalBytes = [System.GC]::GetGCMemoryInfo().TotalAvailableMemoryBytes # ps51-ok: .NET Core only; falls through to the CIM query below on 5.1
     if ($totalBytes -gt 0) { $memGib = [int][Math]::Floor($totalBytes / 1GB) }
-} catch { }
+} catch {
+    try {
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        if ($cs.TotalPhysicalMemory -gt 0) { $memGib = [int][Math]::Floor($cs.TotalPhysicalMemory / 1GB) }
+    } catch { }
+}
 if ($memGib -lt 1) { $memGib = 1 }
 if ($Jobs -gt 0) {
     $translatorThreads = $Jobs; $translatedJobs = $Jobs; $globalJobs = $Jobs
@@ -596,9 +621,57 @@ if (Test-Path -LiteralPath $cmakeCache -PathType Leaf) {
     }
 }
 
+# Prebuilt non-game web libraries (SDL3, aurora, abseil, zstd, ...): web/prebuilt/web-prebuilt.tar.xz plus
+# web-prebuilt.tar.xz.sha256 ("<sha256>  web-prebuilt.tar.xz"). Verified, unpacked with Python (tar.exe
+# cannot be relied on for .xz) into BuildDir/web-prebuilt and handed to CMake, which checks its own source
+# fingerprint and silently falls back to compiling from source if the package does not match.
+$prebuiltArgs = @()
+$prebuiltPkg = Join-Path $workspace 'web/prebuilt/web-prebuilt.tar.xz'
+if (Test-Path -LiteralPath $prebuiltPkg -PathType Leaf) {
+    $prebuiltSumFile = $prebuiltPkg + '.sha256'
+    $prebuiltWant = $null
+    if (Test-Path -LiteralPath $prebuiltSumFile -PathType Leaf) {
+        $sm = [regex]::Match((Get-Content -LiteralPath $prebuiltSumFile -Raw), '(?i)\b([0-9a-f]{64})\b')
+        if ($sm.Success) { $prebuiltWant = $sm.Groups[1].Value.ToLowerInvariant() }
+    }
+    if (-not $prebuiltWant) {
+        Write-Warn "web/prebuilt/web-prebuilt.tar.xz has no usable .sha256 next to it; ignoring the package and building everything from source"
+    } elseif ((Get-Sha256 $prebuiltPkg) -ne $prebuiltWant) {
+        Write-Warn 'web/prebuilt/web-prebuilt.tar.xz does not match its .sha256 (damaged download?); ignoring the package and building everything from source'
+    } else {
+        $prebuiltOut = Join-Path $buildDir 'web-prebuilt'
+        $prebuiltStamp = Join-Path $buildDir 'web-prebuilt.stamp'
+        $prebuiltCurrent = (Test-Path -LiteralPath $prebuiltStamp -PathType Leaf) -and ((Get-Content -LiteralPath $prebuiltStamp -Raw).Trim() -eq $prebuiltWant) -and
+            (Test-Path -LiteralPath $prebuiltOut -PathType Container)
+        if (-not $prebuiltCurrent) {
+            Write-Info 'unpacking the prebuilt web libraries'
+            Remove-Tree $prebuiltOut
+            Remove-Item -LiteralPath $prebuiltStamp -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path $prebuiltOut | Out-Null
+            & $pythonExe @pythonLead -c 'import tarfile,sys; tarfile.open(sys.argv[1]).extractall(sys.argv[2])' $prebuiltPkg $prebuiltOut
+            if ($LASTEXITCODE -ne 0) { Stop-Build 'unpacking web/prebuilt/web-prebuilt.tar.xz failed (delete it to build everything from source)' }
+            [System.IO.File]::WriteAllText($prebuiltStamp, $prebuiltWant)
+        }
+        $prebuiltInner = Join-Path $prebuiltOut 'web-prebuilt'
+        if (Test-Path -LiteralPath $prebuiltInner -PathType Container) {
+            $prebuiltArgs = @("-DMKW_WEB_PREBUILT_DIR=$prebuiltInner")
+            Write-Info "prebuilt web libraries: $prebuiltInner"
+        } else {
+            Write-Warn 'the prebuilt package has no top-level web-prebuilt/ folder; ignoring it'
+        }
+    }
+}
+
 Write-Step 'Configuring the WebAssembly build (emcmake)'
-Invoke-Native 'emcmake cmake (configure)' 'emcmake' @('cmake', '-S', (Join-Path $workspace 'runtime'), '-B', $cmakeBuild, '-G', 'Ninja',
+$configureArgs = @('cmake', '-S', (Join-Path $workspace 'runtime'), '-B', $cmakeBuild, '-G', 'Ninja',
     '-DCMAKE_BUILD_TYPE=Release', "-DMKW_PLATFORM_WEB_DIST=$outDir", "-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs")
+$configureArgs += $prebuiltArgs
+if ($env:MKW_CMAKE_ARGS) {
+    foreach ($extra in ($env:MKW_CMAKE_ARGS -split '\|')) {
+        if ($extra) { $configureArgs += $extra }
+    }
+}
+Invoke-Native 'emcmake cmake (configure)' 'emcmake' $configureArgs
 
 $targets = @($BaseTarget)
 if ($buildRetro) { $targets += $RetroTarget }

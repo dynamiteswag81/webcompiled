@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "comment": "Pinned portable toolchain for build.bat (read by web/windows/build-windows.ps1). Everything lands in tools/ at the repository root. A download is only used when its hash matches; 'hashSource' says where each hash came from. Never put a hash here that was not computed from the real file or published by its vendor.",
+  "emscripten": "6.0.12",
+  "dotnetSdk": "8.0.425",
+  "tools": [
+    {
+      "id": "python",
+      "title": "Python 3.12.10 (portable)",
+      "kind": "zip",
+      "url": "https://api.nuget.org/v3-flatcontainer/python/3.12.10/python.3.12.10.nupkg",
+      "file": "python-3.12.10.nupkg.zip",
+      "size": 14515433,
+      "sha256": "0eb85c2dfccccf1b17352de4c397f69194035b7d37149eacc16f1147d93de3b8",
+      "sha512": "bbda4dcf688a94211b62d50968a91b38f305d0b8d1ecd90269f74a86f8a0a4fcebb7ca162a0753a47691eb3df0c964009bd3d8194c6fd19afae8d5fd01e1cc0f",
+      "hashSource": "sha256: computed from the downloaded file. sha512: the packageHash nuget.org publishes for python 3.12.10 (https://api.nuget.org/v3/catalog0/data/2025.04.08.14.01.15/python.3.12.10.json, owner Python Software Foundation); both agree with the file.",
+      "innerDir": "tools",
+      "dest": "python",
+      "marker": "python.exe"
+    },
+    {
+      "id": "cmake",
+      "title": "CMake 4.3.3",
+      "kind": "zip",
+      "url": "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-windows-x86_64.zip",
+      "file": "cmake-4.3.3-windows-x86_64.zip",
+      "size": 52967828,
+      "sha256": "935ade9e5e8723583c07f44c5592cea2a1c8f65c56ca7e07b34c025c880e0bd6",
+      "hashSource": "Kitware: https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-SHA-256.txt (also the pin in Launcher/Prepare-PortableTools.ps1); matches the downloaded file.",
+      "innerDir": "cmake-4.3.3-windows-x86_64",
+      "dest": "cmake",
+      "marker": "bin/cmake.exe"
+    },
+    {
+      "id": "ninja",
+      "title": "Ninja 1.13.2",
+      "kind": "zip",
+      "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip",
+      "file": "ninja-win-1.13.2.zip",
+      "size": 291570,
+      "sha256": "07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65",
+      "hashSource": "Computed from the downloaded release asset; equals the pin in Launcher/Prepare-PortableTools.ps1 (the ninja project publishes no checksum file).",
+      "innerDir": "",
+      "dest": "ninja",
+      "marker": "ninja.exe"
+    },
+    {
+      "id": "nodtool",
+      "title": "nodtool v2.0.0-alpha.10 (disc extractor)",
+      "kind": "file",
+      "url": "https://github.com/encounter/nod/releases/download/v2.0.0-alpha.10/nodtool-windows-x86_64.exe",
+      "file": "nodtool-windows-x86_64.exe",
+      "size": 3347968,
+      "sha256": "1e150e33b88157527f96caea89ad12267aed8b117180c9ebaa89ebe89c1d948d",
+      "hashSource": "Computed from the downloaded release asset (same release NODTOOL_VERSION / Launcher NodToolProvider.cs use); encounter/nod publishes no checksum file.",
+      "dest": "nodtool",
+      "name": "nodtool.exe",
+      "marker": "nodtool.exe"
+    },
+    {
+      "id": "dotnet",
+      "title": ".NET SDK 8.0.425",
+      "kind": "zip",
+      "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.425/dotnet-sdk-8.0.425-win-x64.zip",
+      "file": "dotnet-sdk-8.0.425-win-x64.zip",
+      "size": 0,
+      "sha512": "f0b6f15bf6f1a0507205c0cb102ab99e1dee875c4682c8ed94665be1d580186a06b21455e83b3a01a0ff7f4cd887b67420f2e2fe09ed985534a4cea488ae1af9",
+      "hashSource": "Microsoft's release metadata: https://raw.githubusercontent.com/dotnet/core/main/release-notes/8.0/releases.json (release 8.0.31, sdk 8.0.425, rid win-x64, dotnet-sdk-win-x64.zip, SHA-512). builds.dotnet.microsoft.com is not reachable from the authoring sandbox, so this download could not be re-hashed there.",
+      "innerDir": "",
+      "dest": "dotnet",
+      "marker": "dotnet.exe"
+    },
+    {
+      "id": "emsdk",
+      "title": "Emscripten SDK 6.0.12",
+      "kind": "emsdk",
+      "version": "6.0.12",
+      "dest": "emsdk",
+      "marker": "emsdk.py",
+      "hashSource": "Files: raw.githubusercontent.com/emscripten-core/emsdk at tag 6.0.12 (a GitHub /archive/ zip cannot be re-hashed reproducibly, so the three files emsdk needs are pinned individually); sha256 computed from the downloaded files. Packages: the three downloads 'emsdk install 6.0.12' performs on Windows, fetched here ahead of it with resume and a hash check; sha256 computed from the files at storage.googleapis.com (Google publishes no checksums for them).",
+      "files": [
+        {
+          "name": "emsdk.py",
+          "url": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.12/emsdk.py",
+          "sha256": "680db2f6d2e49f3e0c1b452784c9ed0c58f08925b0f985a341297163269e5748"
+        },
+        {
+          "name": "emsdk_manifest.json",
+          "url": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.12/emsdk_manifest.json",
+          "sha256": "d274a3b87e436eaced2878b46ce021caa57ca587741306c0a907910084fdaf9d"
+        },
+        {
+          "name": "emscripten-releases-tags.json",
+          "url": "https://raw.githubusercontent.com/emscripten-core/emsdk/6.0.12/emscripten-releases-tags.json",
+          "sha256": "7ca0de1daeb269526980c3acedb5bce576a2c97b119619a91f28fb14cf8b9267"
+        }
+      ],
+      "packages": [
+        {
+          "title": "Emscripten, LLVM and Binaryen 6.0.12 (about 700 MB)",
+          "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/win/6e9f6885cb17a3d6c8fd488a5cff730f50aba61d/wasm-binaries.zip",
+          "name": "6e9f6885cb17a3d6c8fd488a5cff730f50aba61d-wasm-binaries.zip",
+          "size": 700727317,
+          "sha256": "51ac2e51a2c6eeba09fa04418496750662b5c1f022665814b0ee8f557c8328c9"
+        },
+        {
+          "title": "Node.js 24.19.0 for Emscripten",
+          "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v24.19.0-win-x64.zip",
+          "name": "node-v24.19.0-win-x64.zip",
+          "size": 37304352,
+          "sha256": "57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73"
+        },
+        {
+          "title": "Python 3.13.3 for Emscripten",
+          "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/python-3.13.3-0-win-amd64.zip",
+          "name": "python-3.13.3-0-win-amd64.zip",
+          "size": 29736374,
+          "sha256": "6fe7a540c6b8b185780467cf7495e884ee62316ec4abb19e1c735b8a77c62465"
+        }
+      ]
+    }
+  ],
+  "fallbacks": {
+    "dotnetInstallScript": {
+      "comment": "Used only if the direct SDK download above fails. Pinned by content hash of the file served by raw.githubusercontent.com/dotnet/install-scripts/main; if Microsoft changes the script this hash will stop matching and the fallback is skipped (the direct download is the normal path).",
+      "url": "https://raw.githubusercontent.com/dotnet/install-scripts/main/src/dotnet-install.ps1",
+      "file": "dotnet-install.ps1",
+      "size": 60817,
+      "sha256": "3bb07bc8025211836c1e4f9d3f6a044e55b1fb6eec518a6c78851d04e210442b",
+      "hashSource": "Computed from the downloaded file.",
+      "sdkVersion": "8.0.425"
+    }
+  }
+}

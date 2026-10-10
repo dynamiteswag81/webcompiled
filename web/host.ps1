@@ -1,7 +1,7 @@
-#requires -Version 7.0
+#requires -Version 5.1
 <#
 .SYNOPSIS
-    WiiCompiled for the Web - drop-in host entry point (PowerShell 7, Windows / Linux / macOS).
+    WiiCompiled for the Web - drop-in host entry point (Windows PowerShell 5.1 or PowerShell 7; Windows / Linux / macOS).
 
 .DESCRIPTION
     1. Put your own game files into web/game/ (see web/game/README.md).
@@ -88,12 +88,15 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'   # no progress bars (slow in Windows PowerShell 5.1, noise when output is captured)
 
 $DiscExtensions = @('.iso', '.gcm', '.gcz', '.ciso', '.wbfs', '.wia', '.rvz')
 $FingerprintFile = '.build-fingerprint'
 $EmscriptenRecommended = '6.0.12'
 $NodToolVersion = 'v2.0.0-alpha.10'   # keep in step with web/build.ps1
 
+# Windows PowerShell 5.1 has no $IsWindows variable.
+$onWindows = ($env:OS -eq 'Windows_NT')
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 
 function Write-Say([string]$Text) { Write-Host $Text }
@@ -176,7 +179,7 @@ if ($Key) { $serveExtra += @('--key', $Key) }
 foreach ($name in $San) { if ($name) { $serveExtra += @('--san', $name) } }
 if ($Jobs -le 0 -and $env:MKW_JOBS) { $Jobs = [int]$env:MKW_JOBS }
 
-$outDir = [System.IO.Path]::GetFullPath($(if ($Out) { $Out } else { Join-Path $workspace 'web/dist' }), (Get-Location).ProviderPath)
+$outDir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).ProviderPath, $(if ($Out) { $Out } else { Join-Path $workspace 'web/dist' })))
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # ---------------------------------------------------------------------------
@@ -197,7 +200,10 @@ function Find-Python {
     foreach ($cand in $candidates) {
         if (-not (Test-Command $cand[0])) { continue }
         $leading = @($cand | Select-Object -Skip 1)
-        & $cand[0] @leading -c 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)' 2>$null
+        # Relax $ErrorActionPreference: Windows PowerShell 5.1 can turn native stderr into a terminating error.
+        $saved = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & $cand[0] @leading -c 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)' 2>$null } catch { $global:LASTEXITCODE = 1 } finally { $ErrorActionPreference = $saved }
         if ($LASTEXITCODE -eq 0) { return , $cand }
     }
     return $null
@@ -394,7 +400,9 @@ if (-not (Test-Command 'emcc')) {
     $missing += "Emscripten ${EmscriptenRecommended}:  git clone https://github.com/emscripten-core/emsdk; cd emsdk; ./emsdk install $EmscriptenRecommended; ./emsdk activate $EmscriptenRecommended`n       then run emsdk_env.ps1 in this shell (or set `$env:EMSDK to the checkout) before web/host.ps1"
 }
 if (Test-Command 'dotnet') {
-    $sdks = @(& dotnet --list-sdks 2>$null | ForEach-Object { ($_ -split '\s+')[0] })
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $sdks = @(& dotnet --list-sdks 2>$null | ForEach-Object { ($_ -split '\s+')[0] }) } catch { $sdks = @() } finally { $ErrorActionPreference = $saved }
     if (@($sdks | Where-Object { $_ -like '8.*' }).Count -eq 0) { $missing += '.NET 8 SDK (a different version is installed):  https://dotnet.microsoft.com/download/dotnet/8.0' }
 } else {
     $missing += '.NET 8 SDK:  https://dotnet.microsoft.com/download/dotnet/8.0   (winget install Microsoft.DotNet.SDK.8)'
@@ -403,7 +411,7 @@ if (-not (Test-Command 'cmake')) { $missing += 'CMake 3.25 or newer:  https://cm
 if (-not (Test-Command 'ninja')) { $missing += 'Ninja:  winget install Ninja-build.Ninja   (apt install ninja-build / brew install ninja)' }
 if (-not (Find-Python)) { $missing += 'Python 3:  https://www.python.org/downloads/' }
 if ($inputKind -eq 'image') {
-    $exeSuffix = if ($IsWindows) { '.exe' } else { '' }
+    $exeSuffix = if ($onWindows) { '.exe' } else { '' }
     $haveExtractor = [bool]$env:MKW_DISC_EXTRACT_CMD -or [bool]$env:NODTOOL -or (Test-Command 'nodtool') -or
         (Test-Path -LiteralPath (Join-Path $workspace "Launcher/artifacts/nodtool$exeSuffix") -PathType Leaf) -or
         (Test-Command 'DolphinTool') -or (Test-Command 'dolphin-tool')
