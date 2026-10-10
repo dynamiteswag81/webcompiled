@@ -12,7 +12,7 @@ or Edge can open the URL and play: no install, no emulator, no per-player game f
 
 > [!IMPORTANT]
 > There is no Nintendo code, no assets and no game data in this repository, and no pre-translated
-> build is ever distributed. You need your own legally dumped, unmodified **PAL `RMCP01`** disc.
+> build is ever distributed. You need your own copy of the game: unmodified, **PAL `RMCP01`**.
 > The translation runs on the host's machine.
 
 ## How it works

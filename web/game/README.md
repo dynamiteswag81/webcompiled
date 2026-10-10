@@ -10,7 +10,7 @@ Nothing in this folder is ever committed or uploaded; only this README is tracke
    - an already extracted DATA partition: a folder containing `sys/main.dol` and `files/`
      (it can sit one level down, e.g. `game/DATA/sys/main.dol`).
 
-   It must be an unmodified PAL dump; the build checks `main.dol` and `StaticR.rel` hashes and
+   It must be an unmodified PAL copy; the build checks `main.dol` and `StaticR.rel` hashes and
    stops with a clear message if they do not match.
 
 2. **Retro Rewind** (optional) - the `RetroRewind6` folder, i.e. the one that contains

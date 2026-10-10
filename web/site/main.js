@@ -1,4 +1,4 @@
-// WiiCompiled web frontend: compatibility check, loading screen, click-to-start gate,
+// WebCompiled web frontend: compatibility check, loading screen, click-to-start gate,
 // controls help, error overlay. Plain script, no dependencies, no network access besides the
 // game's own files (same origin).
 //
@@ -148,7 +148,7 @@
 
   function buildReport() {
     const out = [];
-    out.push('WiiCompiled error report');
+    out.push('WebCompiled error report');
     out.push('time:       ' + new Date().toISOString());
     out.push('page:       ' + location.href);
     out.push('phase:      ' + phase);

@@ -36,7 +36,7 @@ dotnet --list-runtimes   # Must list Microsoft.NETCore.App 8.x
 
 ## 2. Required Game and Mod Assets
 
-Due to legal requirements, no proprietary Nintendo assets or code are included in this repository. You must provide your own legally dumped game files.
+Due to legal requirements, no proprietary Nintendo assets or code are included in this repository. You must provide your own copy of the game.
 
 1. **Mario Kart Wii PAL (`RMCP01`) Disc Image** *(Required)*:
    - Supported formats: `.iso`, `.wbfs`, `.ciso`, `.rvz`, `.gcm`, `.gcz`.

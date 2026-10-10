@@ -397,7 +397,7 @@ $global:LASTEXITCODE = 0
 if ((-not $?) -or $LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine('')
     [Console]::Error.WriteLine('The build failed (see the messages above).')
-    [Console]::Error.WriteLine('Common causes: not a clean PAL (RMCP01) Mario Kart Wii dump, or too little RAM (try -Jobs 2).')
+    [Console]::Error.WriteLine('Common causes: not an unmodified PAL (RMCP01) copy of Mario Kart Wii, or too little RAM (try -Jobs 2).')
     exit 1
 }
 [System.IO.File]::WriteAllText($fingerprintPath, $fingerprint + "`n")

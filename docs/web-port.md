@@ -7,7 +7,7 @@ without re-deriving the analysis.
 > Game data rule: nothing derived from the disc (main.dol, StaticR.rel, the
 > `generated/` C++ the translator emits from them, extracted `files/`, or any
 > `.wasm` built from them) is ever committed. Each user translates and builds
-> locally from their own PAL `RMCP01` dump, exactly like the native setup.
+> locally from their own PAL `RMCP01` copy of the game, exactly like the native setup.
 > Everything in this repo must build/test without game data, except the final
 > product link.
 
@@ -111,7 +111,7 @@ support on `http://localhost:8080`.
 ## Deployment target (product spec)
 
 The repo never contains game data. The deliverable is a pipeline where an
-**operator** supplies their own PAL `RMCP01` dump (ISO/RVZ/WBFS/...) and runs
+**operator** supplies their own PAL `RMCP01` copy of the game (ISO/RVZ/WBFS/...) and runs
 one command (`web/build.ps1` / `web/build.sh`) that extracts, translates,
 compiles to wasm and writes a **self-contained static site** (`web/dist/`):
 `index.html`, `.js`, `.wasm`, and the extracted disc tree. Any static web
@@ -133,16 +133,16 @@ Consequences:
 
 The cloud session owns all remaining work (it has no game data, so it cannot
 run the translator on the disc or link the final product, but it builds and
-tests everything else). The local session (with the user's dump) is recalled
+tests everything else). The local session (with the user's game files) is recalled
 later only to run the full pipeline end to end and debug against the real game.
 
 ## Status
 
 Last updated by the cloud session. "Verified" means run here, without game data,
-unless it says "local" (verified by the local session with the real dump).
+unless it says "local" (verified by the local session with the real game files).
 
 ### Verified
-* **Translator on the clean PAL dump (local):** 29,637 functions in ~30 s;
+* **Translator on the real PAL game files (local):** 29,637 functions in ~30 s;
   `emit-base-manifest`, `generate-data-init`, `emit-build-shards` succeed
   → 72 `base_common` shards + dispatch + 16 registration TUs (~427 MB C++).
 * **One translated shard compiles with em++ (local)** in ~14 s (1.8 MB object)

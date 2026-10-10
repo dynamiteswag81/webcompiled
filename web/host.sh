@@ -320,7 +320,7 @@ if ! "${MKW_BUILD_SCRIPT:-$script_dir/build.sh}" "${build_args[@]}"; then
     {
         say ""
         say "The build failed (see the messages above)."
-        say "Common causes: not a clean PAL (RMCP01) Mario Kart Wii dump, or too little RAM (try --jobs 2)."
+        say "Common causes: not an unmodified PAL (RMCP01) copy of Mario Kart Wii, or too little RAM (try --jobs 2)."
     } >&2
     exit 1
 fi

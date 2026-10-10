@@ -59,8 +59,8 @@ You can provide either of these:
 * **One disc image** of Mario Kart Wii PAL (`RMCP01`), unmodified: `.iso`,
   `.gcm`, `.gcz`, `.ciso`, `.wbfs`, `.wia` or `.rvz`.
 * **An extracted disc**, meaning the DATA partition's `sys/` and `files/`
-  folders, for example from Dolphin's "Extract Entire Disc". It may sit directly
-  in `web/game/` or one folder down, such as `web/game/DATA/`.
+  folders. It may sit directly in `web/game/` or one folder down, such as
+  `web/game/DATA/`.
 
 Optionally, add the **Retro Rewind** pack: the `RetroRewind6/` folder (the one
 holding `Binaries/Code.pul`), or its parent folder. When it is present, a
@@ -132,7 +132,7 @@ location ~ ^/(disc|mods)/ {
 | "Your browser is missing WebGPU / JSPI" | Older browser, Firefox/Safari, or the page is not on HTTPS/localhost |
 | Error overlay mentions `disc-manifest.json` | `disc/` or the manifest was not uploaded next to `index.html` |
 | Very slow start, huge transfer | The server ignores `Range` (look for whole-file 200 responses to `disc/` requests) |
-| Build stops at the hash check | The disc is not a clean PAL `RMCP01` dump |
+| Build stops at the hash check | The game files are not an unmodified PAL `RMCP01` copy |
 | Build killed / out of memory | Translation and compilation need several GB of RAM; lower `--jobs` |
 
 The error overlay has a **Copy details** button. Include its output when you
