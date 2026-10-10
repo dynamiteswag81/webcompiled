@@ -205,11 +205,14 @@ function Set-ToolchainEnvironment {
     if (Test-Path -LiteralPath $certPath -PathType Leaf) {
         $env:SSL_CERT_FILE = $certPath
         $env:CURL_CA_BUNDLE = $certPath
-        $env:CMAKE_TLS_CAINFO = $certPath
+        # CMake pastes CMAKE_TLS_CAINFO verbatim into generated FetchContent scripts, where a
+        # backslash path is a syntax error; give it forward slashes.
+        $certPathCMake = $certPath.Replace('\', '/')
+        $env:CMAKE_TLS_CAINFO = $certPathCMake
         $env:REQUESTS_CA_BUNDLE = $certPath
         $existing = ''
         if ($env:MKW_CMAKE_ARGS) { $existing = $env:MKW_CMAKE_ARGS + '|' }
-        $env:MKW_CMAKE_ARGS = $existing + '-DCMAKE_TLS_CAINFO=' + $certPath
+        $env:MKW_CMAKE_ARGS = $existing + '-DCMAKE_TLS_CAINFO=' + $certPathCMake
     } else {
         Write-Say "    warning: CA bundle not found at $certPath (downloads inside CMake may fail on some PCs)"
     }

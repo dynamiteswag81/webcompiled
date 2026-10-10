@@ -136,6 +136,13 @@ static StagingMapState s_mappingState;
 // The pending staging map. In the browser the map resolves on the JS event loop, which never runs
 // while the frame loop spins, so begin_frame suspends on this future (JSPI) instead.
 static wgpu::Future s_stagingMapFuture{};
+// Browser WebGPU cannot hand out GPU memory: GetMappedRange allocates and zero-fills a shadow of the
+// whole range in the wasm heap and Unmap copies all of it back, 37 MB each way per frame however
+// little was recorded, and every frame first waited for the map. The browser build records into
+// this arena instead and uploads only the bytes used (queue.writeBuffer into the slot's staging
+// buffer). The staging buffers stay the copy sources of the same encoded copies, so command
+// ordering and slot reuse are unchanged.
+static std::unique_ptr<u8[]> g_stagingArena;
 #endif
 static wgpu::Limits g_cachedLimits;
 // Advanced once per logical frame in the seal prologue, under the renderer GPU mutex and with the
@@ -925,9 +932,19 @@ void initialize() {
                "Shared Storage Buffer");
   for (int i = 0; i < g_stagingBuffers.size(); ++i) {
     const auto label = fmt::format("Staging Buffer {}", i);
+#ifdef __EMSCRIPTEN__
+    createBuffer(g_stagingBuffers[i], wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::CopySrc, StagingBufferSize,
+                 label.c_str());
+#else
     createBuffer(g_stagingBuffers[i], wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc, StagingBufferSize,
                  label.c_str());
+#endif
   }
+#ifdef __EMSCRIPTEN__
+  if (!g_stagingArena) {
+    g_stagingArena = std::make_unique<u8[]>(StagingBufferSize);
+  }
+#endif
   currentStagingBuffer = 0;
   s_mappingState.reset();
   map_staging_buffer();
@@ -1065,7 +1082,9 @@ void map_staging_buffer() {
   }
 
 #ifdef __EMSCRIPTEN__
-  s_stagingMapFuture =
+  // The arena is always writable (see g_stagingArena).
+  s_mappingState.complete(generation, BufferMapState::Mapped);
+  return;
 #endif
   g_stagingBuffers[currentStagingBuffer].MapAsync(
       wgpu::MapMode::Write, 0, StagingBufferSize, wgpu::CallbackMode::AllowSpontaneous,
@@ -1133,7 +1152,11 @@ static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
     if (size <= 0) {
       return;
     }
+#ifdef __EMSCRIPTEN__
+    buf = ByteBuffer{g_stagingArena.get() + bufferOffset, static_cast<size_t>(size)};
+#else
     buf = ByteBuffer{static_cast<u8*>(stagingBuf.GetMappedRange(bufferOffset, size)), static_cast<size_t>(size)};
+#endif
     bufferOffset += size;
   };
   mapBuffer(g_verts, VertexBufferSize);
@@ -1200,7 +1223,9 @@ void abort_frame() noexcept {
     // Pending interpolation tasks hold raw pointers into the mapped staging
     // range; they must be dropped before the buffer is unmapped and rotated.
     gx::drop_pending_frame_interpolation_uniforms();
+#ifndef __EMSCRIPTEN__
     g_stagingBuffers[currentStagingBuffer].Unmap();
+#endif
     s_mappingState.reset();
     currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
     map_staging_buffer();
@@ -1272,13 +1297,18 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   const auto writeBuffer = [&](ByteBuffer& buf, wgpu::Buffer& out, uint64_t size, std::string_view label) {
     const auto writeSize = buf.size(); // Only need to copy this many bytes
     if (writeSize > 0) {
+#ifdef __EMSCRIPTEN__
+      g_queue.WriteBuffer(g_stagingBuffers[currentStagingBuffer], bufferOffset, buf.data(), AURORA_ALIGN(writeSize, 4));
+#endif
       cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], bufferOffset, out, 0, AURORA_ALIGN(writeSize, 4));
       buf.release();
     }
     bufferOffset += size;
     return writeSize;
   };
+#ifndef __EMSCRIPTEN__
   g_stagingBuffers[currentStagingBuffer].Unmap();
+#endif
   s_mappingState.reset();
   g_stats.drawCallCount = g_drawCallCount;
   g_stats.mergedDrawCallCount = g_mergedDrawCallCount;
