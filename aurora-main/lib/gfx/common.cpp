@@ -1211,6 +1211,14 @@ void abort_frame() noexcept {
   g_frameOpen.store(false, std::memory_order_relaxed);
   efb_ram::cancel();
   efb_ram::abort_async();
+#ifdef __EMSCRIPTEN__
+  // Dropped without upload: still return the arena to all-zero (see end_batch_impl).
+  if (g_stagingArena) {
+    for (ByteBuffer* buf : {&g_verts, &g_uniforms, &g_indices, &g_storage}) {
+      if (buf->data() != nullptr && buf->size() > 0) std::memset(buf->data(), 0, buf->size());
+    }
+  }
+#endif
   g_verts.release();
   g_uniforms.release();
   g_indices.release();
@@ -1299,6 +1307,9 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
     if (writeSize > 0) {
 #ifdef __EMSCRIPTEN__
       g_queue.WriteBuffer(g_stagingBuffers[currentStagingBuffer], bufferOffset, buf.data(), AURORA_ALIGN(writeSize, 4));
+      // A freshly mapped range reads as zero and the renderer relies on it (reserved bytes it does not
+      // fill); the arena is reused, so clear what this batch dirtied. Cost scales with use, not 37 MB.
+      std::memset(buf.data(), 0, AURORA_ALIGN(writeSize, 4));
 #endif
       cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], bufferOffset, out, 0, AURORA_ALIGN(writeSize, 4));
       buf.release();

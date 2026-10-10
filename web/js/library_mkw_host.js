@@ -59,13 +59,15 @@ addToLibrary({
     }
   }),
 
-  // Gives the browser a turn. ms <= 1 is a bare macrotask hop (input, canvas
-  // presentation and network callbacks all get to run); longer waits use a
-  // timer so an idle game does not spin a core.
+  // Gives the browser a turn. ms <= 0 is a bare macrotask hop (input, canvas
+  // presentation and network callbacks all get to run); ms >= 1 sleeps on a
+  // timer so an idle game does not spin a core. The timer is armed from a hop:
+  // a timer armed from a timer's continuation nests, and nested timers are
+  // clamped to >= 4 ms, which would make every 1 ms scheduler slice 4 ms.
   mkw_host_yield__deps: ['$MkwHost'],
   mkw_host_yield__async: true,
   mkw_host_yield: (ms) => new Promise((resolve) => {
-    if (ms > 1) setTimeout(resolve, ms);
+    if (ms >= 1) MkwHost.postYield(() => setTimeout(resolve, ms));
     else MkwHost.postYield(resolve);
   }),
 

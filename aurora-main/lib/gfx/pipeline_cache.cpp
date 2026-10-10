@@ -69,10 +69,22 @@ constexpr size_t MaxPipelineWorkers = 22;
 // Cached clear and GX pipelines are prewarmed using the full worker pool.
 constexpr size_t MaxBackgroundPipelineWorkers = MaxPipelineWorkers;
 // For synchronous pipeline fallback (OpenGL)
+#ifdef __EMSCRIPTEN__
+// Browser build. A synchronous createRenderPipeline compiles on the browser GPU process's main
+// thread (D3D shader compilation on Windows: tens of ms per GX pipeline), and the next frame's
+// uploads queue behind it, so a menu screen that introduced 68 pipelines froze for 2 s. GX
+// pipelines first used inside a frame are therefore queued as on threaded hosts and built with
+// createRenderPipelineAsync, which the browser compiles off that thread; skip-unready draws are
+// dropped until then, and a pass that must not drop (wait_pipeline) builds synchronously instead.
+constexpr bool WebAsyncPipelines = true;
+constexpr size_t BuildPipelinesPerFrame = 64; // async starts, not compiles
+#else
+constexpr bool WebAsyncPipelines = false;
 #ifdef NDEBUG
 constexpr size_t BuildPipelinesPerFrame = 5;
 #else
 constexpr size_t BuildPipelinesPerFrame = 1;
+#endif
 #endif
 static std::vector<std::thread> g_pipelineThreads;
 static bool g_pipelineThreadEnd = false;
@@ -448,7 +460,8 @@ static PipelineRef find_pipeline_impl(ShaderType type, const PipelineConfig& con
   std::optional<PipelineCacheWrite> cacheWrite;
   {
     std::scoped_lock guard{g_pipelineMutex};
-    const bool deferGxPipeline = g_hasPipelineThread && g_pipelineFrameActive && type == ShaderType::GX;
+    const bool deferGxPipeline =
+        (g_hasPipelineThread || WebAsyncPipelines) && g_pipelineFrameActive && type == ShaderType::GX;
     const bool skipUnreadyGxPipeline = deferGxPipeline && g_skipUnreadyGxPipelines.load(std::memory_order_relaxed);
     auto pipelineIt = g_pipelines.find(hash);
     if (pipelineIt != g_pipelines.end()) {
@@ -967,8 +980,7 @@ static void note_pipeline_queue_drained() {
            static_cast<double>(stats.hitBytes) / (1024.0 * 1024.0));
 }
 
-static void compile_pending_pipeline(PendingPipeline pending) {
-  auto result = pending.create();
+static void finish_pending_pipeline(PendingPipeline& pending, wgpu::RenderPipeline result) {
   {
     std::lock_guard lock{g_pipelineMutex};
     const auto [_, inserted] = g_pipelines.try_emplace(pending.hash, CachedPipeline{
@@ -985,6 +997,113 @@ static void compile_pending_pipeline(PendingPipeline pending) {
   if (queuedPipelines.load() == 0) {
     note_pipeline_queue_drained();
   }
+}
+
+#ifdef __EMSCRIPTEN__
+// Builds started with createRenderPipelineAsync, by hash. They stay in g_pendingPipelines until
+// finish_web_async_pipeline (or a synchronous waiter) completes them; an entry missing here when the
+// browser answers means a waiter already built the pipeline, and the late result is dropped.
+static absl::flat_hash_map<PipelineRef, PendingPipeline> g_webAsyncInFlight;
+// Set while compile_pending_pipeline runs a queued creator: create_render_pipeline goes async.
+static bool g_webAsyncCreating = false;
+static PipelineRef g_webAsyncRef = 0;
+static bool g_webAsyncStarted = false;
+
+static void finish_web_async_pipeline(PipelineRef ref, wgpu::CreatePipelineAsyncStatus status,
+                                      wgpu::RenderPipeline pipeline, wgpu::StringView message) {
+  PendingPipeline pending;
+  {
+    std::lock_guard lock{g_pipelineMutex};
+    const auto it = g_webAsyncInFlight.find(ref);
+    if (it == g_webAsyncInFlight.end()) {
+      return;
+    }
+    pending = std::move(it->second);
+    g_webAsyncInFlight.erase(it);
+  }
+  if (status != wgpu::CreatePipelineAsyncStatus::Success || !pipeline) {
+    Log.warn("Async pipeline 0x{:x} failed ({}): building it synchronously", static_cast<uint64_t>(ref),
+             std::string_view{message});
+    pipeline = pending.create();
+  }
+  finish_pending_pipeline(pending, std::move(pipeline));
+}
+
+// A queued pipeline is needed now (a pass that cannot drop draws): build it synchronously, whether
+// it is still queued or already compiling asynchronously. Nothing else would complete it while this
+// single-threaded build waits.
+static void build_web_pipeline_now(PipelineRef ref) {
+  PendingPipeline pending;
+  {
+    std::lock_guard lock{g_pipelineMutex};
+    if (g_pipelines.contains(ref) || !g_pendingPipelines.contains(ref)) {
+      return;
+    }
+    if (const auto it = g_webAsyncInFlight.find(ref); it != g_webAsyncInFlight.end()) {
+      pending = std::move(it->second);
+      g_webAsyncInFlight.erase(it);
+    } else if (auto qit = find_pending_pipeline(g_priorityPipelines, ref); qit != g_priorityPipelines.end()) {
+      pending = std::move(*qit);
+      g_priorityPipelines.erase(qit);
+    } else if (auto bit = find_pending_pipeline(g_backgroundPipelines, ref); bit != g_backgroundPipelines.end()) {
+      pending = std::move(*bit);
+      g_backgroundPipelines.erase(bit);
+    } else {
+      return;
+    }
+  }
+  auto pipeline = pending.create();
+  finish_pending_pipeline(pending, std::move(pipeline));
+}
+#endif
+
+wgpu::RenderPipeline create_render_pipeline(const wgpu::RenderPipelineDescriptor& descriptor) {
+#ifdef __EMSCRIPTEN__
+  if (g_webAsyncCreating && !g_webAsyncStarted) {
+    g_webAsyncStarted = true;
+    const PipelineRef ref = g_webAsyncRef;
+    webgpu::g_device.CreateRenderPipelineAsync(
+        &descriptor, wgpu::CallbackMode::AllowSpontaneous,
+        [ref](wgpu::CreatePipelineAsyncStatus status, wgpu::RenderPipeline pipeline, wgpu::StringView message) {
+          finish_web_async_pipeline(ref, status, std::move(pipeline), message);
+        });
+    return {};
+  }
+#endif
+  return webgpu::g_device.CreateRenderPipeline(&descriptor);
+}
+
+static void compile_pending_pipeline(PendingPipeline pending) {
+#ifdef __EMSCRIPTEN__
+  // Parked in the in-flight table before the creator runs: the completion may arrive at once.
+  const PipelineRef ref = pending.hash;
+  NewPipelineCallback create = pending.create;
+  {
+    std::lock_guard lock{g_pipelineMutex};
+    g_webAsyncInFlight.insert_or_assign(ref, std::move(pending));
+  }
+  g_webAsyncCreating = true;
+  g_webAsyncRef = ref;
+  g_webAsyncStarted = false;
+  auto result = create();
+  g_webAsyncCreating = false;
+  if (g_webAsyncStarted) {
+    return; // finish_web_async_pipeline completes it
+  }
+  // The creator built synchronously (it never reached create_render_pipeline).
+  {
+    std::lock_guard lock{g_pipelineMutex};
+    const auto it = g_webAsyncInFlight.find(ref);
+    if (it == g_webAsyncInFlight.end()) {
+      return;
+    }
+    pending = std::move(it->second);
+    g_webAsyncInFlight.erase(it);
+  }
+#else
+  auto result = pending.create();
+#endif
+  finish_pending_pipeline(pending, std::move(result));
 }
 
 static void pipeline_worker() {
@@ -1031,7 +1150,7 @@ static void build_synchronous_pipelines_for_frame() {
     {
       std::lock_guard lock{g_pipelineMutex};
       if (g_priorityPipelines.empty() && g_backgroundPipelines.empty()) {
-        return;
+        break;
       }
       auto& source = !g_priorityPipelines.empty() ? g_priorityPipelines : g_backgroundPipelines;
       pending = std::move(source.front());
@@ -1040,6 +1159,12 @@ static void build_synchronous_pipelines_for_frame() {
     compile_pending_pipeline(std::move(pending));
     ++g_pipelinesPerFrame;
   }
+#ifdef __EMSCRIPTEN__
+  // Deliver async pipeline completions that are already in.
+  if (webgpu::g_instance) {
+    webgpu::g_instance.ProcessEvents();
+  }
+#endif
 }
 
 static size_t pipeline_worker_count() {
@@ -1264,6 +1389,10 @@ bool try_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline) {
 
 static bool wait_pipeline_impl(PipelineRef ref, wgpu::RenderPipeline& pipeline, bool fatalIfMissing,
                                bool persistentPass) {
+#ifdef __EMSCRIPTEN__
+  // No compiler thread: waiting on the condition variable below would never return.
+  build_web_pipeline_now(ref);
+#endif
   std::unique_lock lock{g_pipelineMutex};
   if (!g_pipelines.contains(ref) && g_pendingPipelines.contains(ref)) {
     ZoneScopedN("wait_pipeline");

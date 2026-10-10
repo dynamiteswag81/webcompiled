@@ -45,6 +45,22 @@ html, body {
   touch-action: none;
 }
 
+/* Phones (main.js setupRenderSize): a 16:9 picture, letterboxed, instead of a canvas the game
+   would widen its view to fill. Top-aligned in portrait so the touch controls get the rest. */
+#stage.fixed-aspect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#stage.fixed-aspect #canvas {
+  flex: none;
+  width: min(100vw, 100dvh * 16 / 9);
+  height: min(100dvh, 100vw * 9 / 16);
+}
+@media (orientation: portrait) {
+  #stage.fixed-aspect { align-items: flex-start; }
+}
+
 /* ---- overlays --------------------------------------------------------- */
 .overlay {
   position: absolute;

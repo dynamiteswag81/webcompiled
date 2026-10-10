@@ -111,10 +111,50 @@
   }
 
   // ---------------------------------------------------------------------------------------
+  // Render size
+  // ---------------------------------------------------------------------------------------
+  // The game renders at the canvas's pixel size (CSS size x devicePixelRatio) and widens its view
+  // to the canvas's shape. On a phone that is a tall 3x-density screen: up to ~20x the Wii's
+  // pixels, and in portrait a view the game never showed. Phones therefore get a 16:9 letterboxed
+  // canvas (top-aligned in portrait, leaving the lower half to the touch controls) rendered at
+  // most RENDER_CAP lines; the browser scales it up. ?res=N overrides the cap (0 = full density)
+  // and ?aspect=fill keeps the old full-screen canvas, on any device.
+  const PHONE_RENDER_CAP = 540;
+
+  function setupRenderSize() {
+    const params = new URLSearchParams(location.search);
+    const phone = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches &&
+      !window.matchMedia('(any-pointer: fine)').matches);
+    const resParam = params.get('res');
+    const cap = resParam !== null && /^\d+$/.test(resParam) ? Number(resParam) : (phone ? PHONE_RENDER_CAP : 0);
+    const aspect = params.get('aspect') || (phone ? '16:9' : 'fill');
+    if (aspect === '16:9') document.getElementById('stage').classList.add('fixed-aspect');
+    if (!(cap > 0)) return;
+    // The Emscripten glue and SDL read the global devicePixelRatio whenever the canvas is sized.
+    const own = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio') ||
+      Object.getOwnPropertyDescriptor(Window.prototype, 'devicePixelRatio');
+    if (!own || !own.get) return;
+    const realRatio = () => own.get.call(window) || 1;
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', {
+        configurable: true,
+        get() {
+          const cssHeight = canvas.getBoundingClientRect().height;
+          if (!(cssHeight > 0)) return realRatio();
+          return Math.max(0.25, Math.min(realRatio(), cap / cssHeight));
+        },
+      });
+    } catch (e) {
+      console.warn('render size cap unavailable:', e);
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------
   // DOM helpers
   // ---------------------------------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
   const canvas = $('canvas');
+  setupRenderSize();
   const el = {
     stage: $('stage'),
     loader: $('loader'),

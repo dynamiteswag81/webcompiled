@@ -35,20 +35,16 @@ inline int64_t ParkedNanos() { return ParkedNanosCounter().load(std::memory_orde
 // promises, then this stack resumes (no setTimeout clamp).
 inline void Yield() { mkw_host_yield(0); }
 
-// Waits until `deadline`. Long waits sleep on a timer that fires ~2 ms early
-// (browser timers are coarse); the remainder is covered by macrotask hops, so
-// the deadline is met without starving the page.
+// Waits until `deadline`. Whole milliseconds sleep on a browser timer (unclamped, see
+// mkw_host_yield; it fires at or a little after the requested time); only the sub-millisecond
+// remainder is covered by macrotask hops. Hopping through whole waits instead spun the idle
+// scheduler at ~150k hops/s, a full core whenever the game had nothing to do.
 template <typename Clock, typename Duration>
 inline void SleepUntil(std::chrono::time_point<Clock, Duration> deadline) {
     using namespace std::chrono;
-    constexpr auto kTimerSlack = milliseconds(2);
     for (auto now = Clock::now(); now < deadline; now = Clock::now()) {
-        const auto remaining = deadline - now;
-        if (remaining > kTimerSlack + milliseconds(1)) {
-            mkw_host_yield(static_cast<int>(duration_cast<milliseconds>(remaining - kTimerSlack).count()));
-        } else {
-            mkw_host_yield(0);
-        }
+        const auto wholeMs = duration_cast<milliseconds>(deadline - now).count();
+        mkw_host_yield(wholeMs >= 1 ? static_cast<int>(wholeMs) : 0);
     }
 }
 // True while document.visibilityState is "hidden" (background tab, minimized window).

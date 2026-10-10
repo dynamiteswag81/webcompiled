@@ -28,6 +28,10 @@ template <typename Config>
 PipelineRef find_pipeline(ShaderType type, const Config& config, NewPipelineCallback&& cb);
 
 bool wait_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline);
+// Pipeline creators call this instead of Device::CreateRenderPipeline. In the browser build, while
+// the cache is building a queued pipeline, it starts createRenderPipelineAsync and returns null; the
+// cache completes the entry when the browser has compiled it. Everywhere else it creates directly.
+wgpu::RenderPipeline create_render_pipeline(const wgpu::RenderPipelineDescriptor& descriptor);
 bool try_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline);
 // Waits indefinitely for a draw about to be committed to a persistent texture with no re-issue
 // path. Separate from wait_pipeline so skip-unready mode never becomes blocking for other passes.

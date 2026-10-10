@@ -6,6 +6,7 @@
 #include "../webgpu/gpu.hpp"
 #include "../internal.hpp"
 #include "../gfx/common.hpp"
+#include "../gfx/pipeline_cache.hpp"
 #include "../gfx/tex_palette_conv.hpp"
 #include "../gfx/texture.hpp"
 #include "../gfx/texture_convert.hpp"
@@ -1642,7 +1643,7 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu:
           },
       .fragment = &fragmentState,
   };
-  return g_device.CreateRenderPipeline(&descriptor);
+  return gfx::create_render_pipeline(descriptor);
 }
 
 u8 comp_type_size(GXAttr attr, GXCompType type) noexcept {
