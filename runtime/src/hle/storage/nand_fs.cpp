@@ -42,6 +42,15 @@ void LogNandWarning(const char* func, const char* fmt, ...) {
     va_end(args);
 }
 
+void LogNandNotFound(const char* func, const std::filesystem::path& hostPath, const char* detail) {
+    const std::string text = HostPathText(hostPath);
+    if (!RtLogFirstTime(std::string(func) + '|' + text)) {
+        return;
+    }
+    RT_LOGF_INFO(RT_TAG_NAND, "%s: '%s' not found (%s; reported once per path)\n", func, text.c_str(),
+                 detail);
+}
+
 // ============================================================================
 // File Descriptor Management
 // ============================================================================

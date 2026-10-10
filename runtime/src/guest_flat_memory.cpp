@@ -615,7 +615,7 @@ void Initialize(const std::vector<RegionRequest>& regions) {
     g_activeRegions = regions;
     g_initialized = true;
 
-    RT_LOG(RT_TAG_MEMORY) << "guest address space reserved at 0x" << std::hex
+    RT_LOG_INFO(RT_TAG_MEMORY) << "guest address space reserved at 0x" << std::hex
               << reinterpret_cast<uintptr_t>(g_base) << std::dec << " (" << MappedRegions().size()
               << " regions, " << Sections().size() << " backing stores)" << std::endl;
 }
@@ -689,7 +689,7 @@ void LogFaultSummary() noexcept {
     if (reported.exchange(true, std::memory_order_relaxed)) return;
     const FaultCounters counters = Counters();
     if (counters.unmapped == 0) {
-        RT_LOG(RT_TAG_MEMORY) << "shutdown summary: no unmapped guest touches (efb="
+        RT_LOG_INFO(RT_TAG_MEMORY) << "shutdown summary: no unmapped guest touches (efb="
                   << counters.efb << " xguard=" << counters.xguard << " mmio=" << counters.mmio
                   << ")" << std::endl;
         std::cerr.flush();

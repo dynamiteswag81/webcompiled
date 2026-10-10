@@ -317,7 +317,7 @@ void SystemBridge::Initialize() {
 
     // Initialize from the embedded DOL/REL data sections. This provides the
     // initial memory state for .data, .rodata, .sdata, etc.
-    RT_LOG(RT_TAG_RUNTIME) << "Initializing data sections from embedded DOL/REL data" << std::endl;
+    RT_LOG_INFO(RT_TAG_RUNTIME) << "Initializing data sections from embedded DOL/REL data" << std::endl;
     InitializeDataSections();
 
     // Constructors run before the main entry point, but they still require the
@@ -332,7 +332,7 @@ void SystemBridge::Initialize() {
 
     // Run main DOL static constructors first
     // These set up vtables and other critical infrastructure
-    RT_LOG(RT_TAG_RUNTIME) << "Running static constructors for main DOL..." << std::endl;
+    RT_LOG_INFO(RT_TAG_RUNTIME) << "Running static constructors for main DOL..." << std::endl;
 
     const uint32_t dolCtorStart = 0x80244DE0;
     const uint32_t dolCtorEnd = 0x80244EA0;
@@ -368,10 +368,10 @@ void SystemBridge::Initialize() {
             g_sehJumpTarget = nullptr;
         }
     }
-    RT_LOG(RT_TAG_RUNTIME) << "Executed " << dolCount << " main DOL static constructors." << std::endl;
+    RT_LOG_INFO(RT_TAG_RUNTIME) << "Executed " << dolCount << " main DOL static constructors." << std::endl;
 
     // StaticR.rel ctors must be run manually since we aren't using OSLink
-    RT_LOG(RT_TAG_RUNTIME) << "Running static constructors for StaticR.rel..." << std::endl;
+    RT_LOG_INFO(RT_TAG_RUNTIME) << "Running static constructors for StaticR.rel..." << std::endl;
 
     // Define range for StaticR.rel .ctors
     const uint32_t ctorStart = 0x8088f400;
@@ -409,7 +409,7 @@ void SystemBridge::Initialize() {
         }
     }
     g_suppressSehReporting = false;
-    RT_LOG(RT_TAG_RUNTIME) << "Executed " << count << " static constructors." << std::endl;
+    RT_LOG_INFO(RT_TAG_RUNTIME) << "Executed " << count << " static constructors." << std::endl;
 }
 
 void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const std::filesystem::path& mem1Path) {
@@ -588,14 +588,14 @@ void SystemBridge::SeedLowMemDefaults(const Memory::Config& config) {
     }
 
     if (seededCount != 0) {
-        RT_LOG(RT_TAG_RUNTIME) << "Seeded " << seededCount << " low-memory default(s)" << std::endl;
+        RT_LOG_INFO(RT_TAG_RUNTIME) << "Seeded " << seededCount << " low-memory default(s)" << std::endl;
     }
 
     if (patchedAny && mem2Size != 0) {
         const uint32_t patchedLo = Memory::Read32(0x80003124u);
         const uint32_t patchedHi = Memory::Read32(0x80003128u);
         const uint32_t patchedSize = Memory::Read32(0x8000311Cu);
-        RT_LOG(RT_TAG_RUNTIME) << "MEM2 defaults active -> size=" << (patchedSize / (1024 * 1024))
+        RT_LOG_INFO(RT_TAG_RUNTIME) << "MEM2 defaults active -> size=" << (patchedSize / (1024 * 1024))
                   << " MB, arena 0x" << std::hex << std::uppercase << patchedLo
                   << " - 0x" << patchedHi << std::dec << std::nouppercase << std::endl;
     }

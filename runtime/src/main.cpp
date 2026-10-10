@@ -861,8 +861,12 @@ void RuntimeAuroraLogCallback(AuroraLogLevel level, const char* module,
                               const char* message, unsigned int len) {
     const std::string_view moduleView = module != nullptr ? std::string_view(module) : std::string_view{};
     const std::string_view messageView = message != nullptr ? std::string_view(message, len) : std::string_view{};
-    std::cerr << "[aurora] [" << static_cast<int>(level) << "] [" << moduleView << "] "
-              << messageView << std::endl;
+    // Debug/info lines are progress notes: on the web they go to stdout (console.log) so the
+    // page does not report them as errors. Warnings and worse stay on stderr; native builds
+    // keep everything on stderr.
+    std::ostream& out = (level == LOG_DEBUG || level == LOG_INFO) ? RT_INFO_STREAM : std::cerr;
+    out << "[aurora] [" << static_cast<int>(level) << "] [" << moduleView << "] "
+        << messageView << std::endl;
     if (level == LOG_FATAL) {
         ShowRuntimeFatalPopup("Aurora reported a fatal renderer error", messageView);
     }
@@ -1468,7 +1472,7 @@ int RuntimeMain(int argc, char** argv) {
                       << backendDisplayName(auroraInfo.backend)
                       << "\". See the [aurora::gpu] lines above for the reason." << std::endl;
         } else {
-            RT_LOG(RT_TAG_RUNTIME) << "graphics backend: " << backendDisplayName(auroraInfo.backend)
+            RT_LOG_INFO(RT_TAG_RUNTIME) << "graphics backend: " << backendDisplayName(auroraInfo.backend)
                       << std::endl;
         }
         aurora_set_frame_worker_wait_callback(ServiceGuestTimingDuringAuroraFrameWait);
@@ -1476,7 +1480,7 @@ int RuntimeMain(int argc, char** argv) {
         UpdateMkwDynamicAspectSurface(auroraInfo.windowSize.native_fb_width,
                                       auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
-        RT_LOG(RT_TAG_CONFIG) << "video.widescreen=" << (configWidescreen ? "true" : "false")
+        RT_LOG_INFO(RT_TAG_CONFIG) << "video.widescreen=" << (configWidescreen ? "true" : "false")
                   << " force_16_9=" << (forceAspect169 ? "true" : "false")
                   << " SCGetAspectRatio=" << (configWidescreen || forceAspect169 ? 1 : 0)
                   << " resolutionMultiplier=" << resolutionMultiplier

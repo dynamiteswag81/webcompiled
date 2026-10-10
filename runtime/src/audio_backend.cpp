@@ -129,8 +129,24 @@ bool AudioBackend::QueueHasCapacityLocked(int incomingBytes) {
         // A drop is audible; report the first one so it is not invisible.
         if (!m_reportedDroppedBlock) {
             m_reportedDroppedBlock = true;
-            RT_LOG(RT_TAG_AUDIO) << "output queue full (" << queued << "/" << maxQueued
-                      << " bytes); dropping blocks to preserve continuity" << std::endl;
+            // While the output is not draining (device paused, or on the web the
+            // AudioContext still suspended before the first user gesture or while the
+            // tab is hidden) a full queue is expected, not an error, so it is logged as
+            // information there. Natively a running device that overflows is still an
+            // error-level line.
+            const bool deviceStopped = SDL_AudioStreamDevicePaused(m_stream);
+#if defined(__EMSCRIPTEN__)
+            constexpr bool kDrainMayBeStopped = true;
+#else
+            constexpr bool kDrainMayBeStopped = false;
+#endif
+            std::ostream& out = (deviceStopped || kDrainMayBeStopped) ? RT_INFO_STREAM : std::cerr;
+            out << "[" RT_TAG_AUDIO "] output queue full (" << queued << "/" << maxQueued
+                << " bytes); dropping blocks to preserve continuity"
+                << ((deviceStopped || kDrainMayBeStopped)
+                        ? " (expected while the audio output is not running yet or paused)"
+                        : "")
+                << std::endl;
         }
         return false;
     }

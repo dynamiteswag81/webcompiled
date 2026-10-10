@@ -203,7 +203,13 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
             file = NandFopen(hostPath, fopenMode);
         }
         if (!file) {
-            LogNandError("NANDOpen", "FAILED to open");
+            // Only a read open can legitimately find nothing; write modes create the file.
+            if (mode == 1 && !PathExists(hostPath)) {
+                LogNandNotFound("NANDOpen", hostPath, "optional file, the game handles NOEXISTS");
+            } else {
+                LogNandError("NANDOpen", "FAILED to open '%s' (mode %u)",
+                             HostPathText(hostPath).c_str(), mode);
+            }
             return NAND_RESULT_NOEXISTS;
         }
     }

@@ -418,8 +418,12 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
             file = NandFopen(hostPath, "rb");
         }
         if (!file) {
-            LogNandError("NANDSafeOpen", "FAILED to open '%s' for reading",
-                    HostPathText(hostPath).c_str());
+            if (!PathExists(hostPath)) {
+                LogNandNotFound("NANDSafeOpen", hostPath, "read open, the game handles NOEXISTS");
+            } else {
+                LogNandError("NANDSafeOpen", "FAILED to open '%s' for reading",
+                        HostPathText(hostPath).c_str());
+            }
             return NAND_RESULT_NOEXISTS;
         }
 
@@ -432,8 +436,7 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
     // Write modes. The library queries the attributes of the original first, so a safe
     // open of a file that does not exist fails instead of creating one.
     if (!PathExists(hostPath)) {
-        LogNandError("NANDSafeOpen", "FAILED: '%s' does not exist, safe open never creates it",
-                HostPathText(hostPath).c_str());
+        LogNandNotFound("NANDSafeOpen", hostPath, "write open, safe open never creates it");
         return NAND_RESULT_NOEXISTS;
     }
     if (IsDirectory(hostPath)) {

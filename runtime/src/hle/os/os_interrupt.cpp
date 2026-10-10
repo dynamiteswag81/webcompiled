@@ -86,9 +86,9 @@ extern "C" uint32_t OS____InterruptInit_801a661c(uint32_t r3, uint32_t r4, uint3
     (void)r8;
 
     std::call_once(interrupt_init_log_once, [&]() {
-        RT_LOG(RT_TAG_OS) << "OS____InterruptInit_801a661c called: r3=" << r3 << " r4=" << r4 << " r5=" << r5
+        RT_LOG_INFO(RT_TAG_OS) << "OS____InterruptInit_801a661c called: r3=" << r3 << " r4=" << r4 << " r5=" << r5
                   << " r6=" << r6 << " r7=" << r7 << " r8=" << r8 << std::endl;
-        RT_LOG(RT_TAG_OS) << "OSInterruptInit: skipped hardware MMIO setup; marking interrupts initialized" << std::endl;
+        RT_LOG_INFO(RT_TAG_OS) << "OSInterruptInit: skipped hardware MMIO setup; marking interrupts initialized" << std::endl;
     });
 
     // Keep interrupts disabled until RestoreInterrupts decides otherwise.
@@ -127,9 +127,9 @@ extern "C" uint32_t OS__ExceptionInit_801a00e0(uint32_t r3, uint32_t r4, uint32_
     (void)r20;
 
     std::call_once(exception_init_log_once, [&]() {
-        RT_LOG(RT_TAG_OS) << "OS__ExceptionInit_801a00e0 called: r3=" << r3 << " r4=" << r4 << " r5=" << r5
+        RT_LOG_INFO(RT_TAG_OS) << "OS__ExceptionInit_801a00e0 called: r3=" << r3 << " r4=" << r4 << " r5=" << r5
                   << " r6=" << r6 << " r7=" << r7 << " r8=" << r8 << " r20=" << r20 << std::endl;
-        RT_LOG(RT_TAG_OS) << "OSExceptionInit: skipped exception vector setup" << std::endl;
+        RT_LOG_INFO(RT_TAG_OS) << "OSExceptionInit: skipped exception vector setup" << std::endl;
     });
     return 0;
 }
@@ -199,7 +199,7 @@ extern "C" uint32_t __OSUnmaskInterrupts_801a69bc_hle(uint32_t mask)
 // EXI: early hardware init touches Hollywood registers (0xCD00xxxx). Provide a no-op stub.
 extern "C" uint32_t EXIInit_80168fa0()
 {
-    RT_LOG(RT_TAG_OS) << "EXIInit_80168fa0 called: skipping MMIO register setup" << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "EXIInit_80168fa0 called: skipping MMIO register setup" << std::endl;
     return 0;
 }
 
@@ -226,7 +226,7 @@ extern "C" uint32_t SetInterruptMask_801a66e0(uint32_t mask, uint32_t enable)
 
     // Log occasionally
     if (prev_count < 8 || (prev_count & 0x3FF) == 0) {
-        RT_LOG(RT_TAG_OS) << "SetInterruptMask_801a66e0 called: mask=0x" << std::hex << mask << std::dec
+        RT_LOG_INFO(RT_TAG_OS) << "SetInterruptMask_801a66e0 called: mask=0x" << std::hex << mask << std::dec
                   << " enable=" << enable
                   << " (forcing return 0 to break loop)" << std::endl;
     }
@@ -251,7 +251,7 @@ extern "C" uint32_t OS____MaskInterrupts_801a693c(uint32_t mask, uint32_t unmask
     const int count = call_count.fetch_add(1);
     
     if (count < 5) {
-        RT_LOG(RT_TAG_OS) << "OS____MaskInterrupts_801a693c called: mask=0x" << std::hex << mask
+        RT_LOG_INFO(RT_TAG_OS) << "OS____MaskInterrupts_801a693c called: mask=0x" << std::hex << mask
                   << " unmask=0x" << unmask << std::dec 
                   << " (stubbed to prevent MMIO verification loop)" << std::endl;
     }
@@ -284,7 +284,7 @@ extern "C" uint32_t EXISelect_801689d0(uint32_t channel, uint32_t device, uint32
     // Log occasionally to avoid spam if polled frequently
     static int log_counter = 0;
     if (log_counter++ < 10) {
-        RT_LOG(RT_TAG_OS) << "EXISelect_801689d0 called: channel=" << channel
+        RT_LOG_INFO(RT_TAG_OS) << "EXISelect_801689d0 called: channel=" << channel
                   << " device=" << device << " freq=" << frequency 
                   << " (stubbed success)" << std::endl;
     }
@@ -300,7 +300,7 @@ extern "C" uint32_t EXISelect_801689d0(uint32_t channel, uint32_t device, uint32
     {                                                                     \
         static int log_count = 0;                                         \
         if (log_count++ < (logLimit)) {                                   \
-            RT_LOG(RT_TAG_OS) << #name " called: " channelLabel           \
+            RT_LOG_INFO(RT_TAG_OS) << #name " called: " channelLabel           \
                       << channel << " (stubbed success)" << std::endl;    \
         }                                                                 \
         return 1;                                                         \
@@ -351,7 +351,7 @@ extern "C" uint32_t EXIImm_80167f68(uint32_t channel, uint32_t buffer, uint32_t 
     // Log only occasionally
     static int log_count = 0;
     if (log_count++ < 5) {
-        RT_LOG(RT_TAG_OS) << "EXIImm_80167f68 called: chan=" << channel << " len=" << length << " type=" << type << " (stubbed success)" << std::endl;
+        RT_LOG_INFO(RT_TAG_OS) << "EXIImm_80167f68 called: chan=" << channel << " len=" << length << " type=" << type << " (stubbed success)" << std::endl;
     }
     return 1; // Success
 }
@@ -364,7 +364,7 @@ extern "C" uint32_t EXIDma_80168288(uint32_t channel, uint32_t buffer, uint32_t 
 {
     static int log_count = 0;
     if (log_count++ < 5) {
-        RT_LOG(RT_TAG_OS) << "EXIDma_80168288 called: chan=" << channel << " len=" << length << " (stubbed success)" << std::endl;
+        RT_LOG_INFO(RT_TAG_OS) << "EXIDma_80168288 called: chan=" << channel << " len=" << length << " (stubbed success)" << std::endl;
     }
     return 1; // Success
 }
@@ -400,7 +400,7 @@ extern "C" uint32_t OSSetPowerCallback_801ab75c(CpuContext* ctx)
     const uint32_t kCallbackPtrAddr = r13 - 0x62b8u;
     const uint32_t kHandlerActiveAddr = r13 - 0x62c0u;
 
-    RT_LOG(RT_TAG_OS) << "OSSetPowerCallback_801ab75c called: newCB=0x"
+    RT_LOG_INFO(RT_TAG_OS) << "OSSetPowerCallback_801ab75c called: newCB=0x"
               << std::hex << newCallback << std::dec << std::endl;
 
     // 1. Disable Interrupts (Preserve atomicity as per SDK)
@@ -486,7 +486,7 @@ PPC_NATIVE_OVERRIDE(80193010, IPCReadReg_80193010, uint32_t, (uint32_t index), (
 // ----------------------------------------------------------------------------
 extern "C" int32_t IPCCltInit_80193478(CpuContext* ctx)
 {
-    RT_LOG(RT_TAG_OS) << "IPCCltInit_80193478 called: calling IPCInit for buffer setup" << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "IPCCltInit_80193478 called: calling IPCInit for buffer setup" << std::endl;
     
     // Sets 0x803867EC/F0/E8 (IPC buffer lo/hi + init flag) from __OSGetIPCBufferLo/Hi.
     InvokeIndirectCpu(0x80192F7Cu, ctx);
@@ -496,7 +496,7 @@ extern "C" int32_t IPCCltInit_80193478(CpuContext* ctx)
     uint32_t newBufLo = bufferLo + 0x1000; // Advance by 4KB for iosHeap
     Memory::Write32(ctx->gpr[13] + -25620, newBufLo);
     
-    RT_LOG(RT_TAG_OS) << "IPCCltInit: IPC buffer lo advanced from 0x" << std::hex << bufferLo
+    RT_LOG_INFO(RT_TAG_OS) << "IPCCltInit: IPC buffer lo advanced from 0x" << std::hex << bufferLo
               << " to 0x" << newBufLo << std::dec << std::endl;
     
     // Skip the rest (interrupt handler, IPC MMIO access) - those are hardware-specific

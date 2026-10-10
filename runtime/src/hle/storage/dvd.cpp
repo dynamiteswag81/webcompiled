@@ -624,7 +624,7 @@ static void ApplyFolderByNameMapping(const RuntimeRiivolution::Mapping& mapping)
 #endif
     WalkDirectory(mapping.hostPath, mapping.recursive, /*announceErrors=*/false, applyEntry);
 
-    RT_LOG(RT_TAG_DVD) << HostPathText(mapping.hostPath) << ": replaced " << replaced
+    RT_LOG_INFO(RT_TAG_DVD) << HostPathText(mapping.hostPath) << ": replaced " << replaced
               << " disc file(s) by filename" << std::endl;
 }
 
@@ -780,7 +780,7 @@ static void BuildAndPublishRuntimeFst() {
     Memory::Write32(0x80000038u, fstAddress);
     Memory::Write32(0x8000003Cu, static_cast<uint32_t>(image.bytes.size()));
 
-    RT_LOG(RT_TAG_DVD) << "published " << image.entries.size() << " FST entries ("
+    RT_LOG_INFO(RT_TAG_DVD) << "published " << image.entries.size() << " FST entries ("
               << image.bytes.size() << " bytes) at 0x" << std::hex << fstAddress
               << " inside the boot-time MEM2 reservation" << std::dec << std::endl;
 
@@ -788,7 +788,7 @@ static void BuildAndPublishRuntimeFst() {
         std::ofstream dump(dumpPath, std::ios::binary);
         dump.write(reinterpret_cast<const char*>(image.bytes.data()),
                    static_cast<std::streamsize>(image.bytes.size()));
-        RT_LOG(RT_TAG_DVD) << "dumped published FST to " << dumpPath << std::endl;
+        RT_LOG_INFO(RT_TAG_DVD) << "dumped published FST to " << dumpPath << std::endl;
     }
 }
 
@@ -903,7 +903,7 @@ extern "C" void DVDInit_8015EA1C()
     for (auto overlay = overlays.rbegin(); overlay != overlays.rend(); ++overlay) {
         ScanOverlayRoot(*overlay);
     }
-    RT_LOG(RT_TAG_DVD) << "disc index: " << vanillaEntryCount << " disc file(s), "
+    RT_LOG_INFO(RT_TAG_DVD) << "disc index: " << vanillaEntryCount << " disc file(s), "
               << (g_fileEntries.size() - vanillaEntryCount) << " overlay registration(s) from "
               << overlays.size() << " root(s)" << std::endl;
 

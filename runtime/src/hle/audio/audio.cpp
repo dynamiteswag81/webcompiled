@@ -179,7 +179,7 @@ extern "C" void AIInit_801240b0(uint32_t callback_stack_switch)
     if (!EnsureAudioBackend(rate)) {
         ReportAudioProblem("AIInit", "audio backend init failed");
     } else {
-        RT_LOG(RT_TAG_AUDIO) << "AIInit_801240b0 called: Audio subsystem initialized (HLE)" << std::endl;
+        RT_LOG_INFO(RT_TAG_AUDIO) << "AIInit_801240b0 called: Audio subsystem initialized (HLE)" << std::endl;
     }
 }
 
@@ -198,7 +198,7 @@ REGISTER_NATIVE_FUNCTION(0x80124094, AICheckInit_80124094);
 extern "C" void DSPInit_8015d444()
 {
     AxDspHle::Init();
-    RT_LOG(RT_TAG_AUDIO) << "DSPInit_8015d444 called: DSP hardware boundary initialized (HLE)" << std::endl;
+    RT_LOG_INFO(RT_TAG_AUDIO) << "DSPInit_8015d444 called: DSP hardware boundary initialized (HLE)" << std::endl;
 }
 
 PPC_NATIVE_OVERRIDE_VOID(8015d444, DSPInit_8015d444, (), ());
@@ -218,7 +218,7 @@ REGISTER_NATIVE_FUNCTION(0x8015D50C, DSPAddTask_8015d50c);
 extern "C" void __DSP_boot_task_8015dc60(uint32_t task_ptr)
 {
     AxDspHle::AssertTask(task_ptr);
-    RT_LOG(RT_TAG_AUDIO) << "__DSP_boot_task called: booted DSP task at 0x"
+    RT_LOG_INFO(RT_TAG_AUDIO) << "__DSP_boot_task called: booted DSP task at 0x"
               << std::hex << task_ptr << std::dec << std::endl;
 }
 
@@ -228,7 +228,7 @@ PPC_NATIVE_OVERRIDE_VOID(8015dc60, __DSP_boot_task_8015dc60, (uint32_t task_ptr)
 extern "C" void __AXOutInitDSP_801269bc(CpuContext* ctx)
 {
     AxDspHle::InitForAXOut(ctx);
-    RT_LOG(RT_TAG_AUDIO) << "__AXOutInitDSP called: native AX/DSP HLE initialized." << std::endl;
+    RT_LOG_INFO(RT_TAG_AUDIO) << "__AXOutInitDSP called: native AX/DSP HLE initialized." << std::endl;
 }
 
 PPC_NATIVE_OVERRIDE_VOID(801269bc, __AXOutInitDSP_801269bc, (CpuContext* ctx), (ctx));

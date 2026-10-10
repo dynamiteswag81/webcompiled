@@ -121,7 +121,7 @@ PPC_NATIVE_OVERRIDE(801B24C8, SCGetProductGameRegion_HLE, uint32_t, (), ());
 // Returns: 1 = installed, 0 = not installed
 extern "C" uint32_t OS__IsTitleInstalled(uint32_t titleIdHi, uint32_t titleIdLo)
 {
-    RT_LOGF(RT_TAG_HLE, "CINS: OSIsTitleInstalled(0x%08X%08X) -> 1 (stubbed as installed)\n",
+    RT_LOGF_INFO(RT_TAG_HLE, "CINS: OSIsTitleInstalled(0x%08X%08X) -> 1 (stubbed as installed)\n",
             titleIdHi, titleIdLo);
     return 1; // Always report installed
 }
@@ -133,7 +133,7 @@ PPC_NATIVE_OVERRIDE(801AE4A0, OS__IsTitleInstalled, uint32_t, (uint32_t titleIdH
 extern "C" uint32_t OS__CheckInstall(uint32_t requiredBlocks, uint32_t titleIdHi, 
                                       uint32_t titleIdLo, uint32_t outFlagsPtr)
 {
-    RT_LOGF(RT_TAG_HLE, "OS__CheckInstall(blocks=%u, 0x%08X%08X) -> success (stubbed)\n",
+    RT_LOGF_INFO(RT_TAG_HLE, "OS__CheckInstall(blocks=%u, 0x%08X%08X) -> success (stubbed)\n",
             requiredBlocks, titleIdHi, titleIdLo);
     if (outFlagsPtr != 0) {
         Memory::Write32(outFlagsPtr, 0x3); // has data + has update = fully installed

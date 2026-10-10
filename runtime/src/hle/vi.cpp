@@ -636,7 +636,7 @@ void VI_HLE_SetXfbReady(uint32_t xfbAddr) {
 // the same defaults instead, so the two entry points share one body.
 static void SeedViStateForInit(CpuContext* ctx, const char* who)
 {
-    RT_LOG(RT_TAG_VI) << who << " called: seeding VI state (HLE)" << std::endl;
+    RT_LOG_INFO(RT_TAG_VI) << who << " called: seeding VI state (HLE)" << std::endl;
     {
         std::lock_guard<std::mutex> lock(g_viMutex);
         EnsureInitializedLocked();
@@ -663,21 +663,21 @@ PPC_NATIVE_OVERRIDE_VOID(801B9294, __VIInit_HLE_801b9294, (CpuContext* ctx), (ct
 extern "C" void VIInit_caseD_0_HLE_801b9934(CpuContext* ctx)
 {
     (void)ctx;
-    RT_LOG(RT_TAG_VI) << "VIInit_caseD_0_801b9934 stubbed" << std::endl;
+    RT_LOG_INFO(RT_TAG_VI) << "VIInit_caseD_0_801b9934 stubbed" << std::endl;
 }
 PPC_NATIVE_OVERRIDE_VOID(801B9934, VIInit_caseD_0_HLE_801b9934, (CpuContext* ctx), (ctx));
 
 extern "C" void VIInit_caseD_1_HLE_801b993c(CpuContext* ctx)
 {
     (void)ctx;
-    RT_LOG(RT_TAG_VI) << "VIInit_caseD_1_801b993c stubbed" << std::endl;
+    RT_LOG_INFO(RT_TAG_VI) << "VIInit_caseD_1_801b993c stubbed" << std::endl;
 }
 PPC_NATIVE_OVERRIDE_VOID(801B993C, VIInit_caseD_1_HLE_801b993c, (CpuContext* ctx), (ctx));
 
 extern "C" void VIInit_caseD_2_HLE_801b9944(CpuContext* ctx)
 {
     (void)ctx;
-    RT_LOG(RT_TAG_VI) << "VIInit_caseD_2_801b9944 stubbed" << std::endl;
+    RT_LOG_INFO(RT_TAG_VI) << "VIInit_caseD_2_801b9944 stubbed" << std::endl;
 }
 PPC_NATIVE_OVERRIDE_VOID(801B9944, VIInit_caseD_2_HLE_801b9944, (CpuContext* ctx), (ctx));
 

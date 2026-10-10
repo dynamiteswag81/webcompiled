@@ -114,13 +114,13 @@ PPC_NATIVE_OVERRIDE(8013A300, BTM_IsDeviceUp_HLE_8013a300, uint32_t, (CpuContext
 // SIInit (0x801b2de0): skips MMIO setup at 0xCD006434 and controller detection.
 extern "C" void SIInit_801b2de0()
 {
-    RT_LOG(RT_TAG_OS) << "SIInit_801b2de0 called: skipping MMIO register setup and controller detection" << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "SIInit_801b2de0 called: skipping MMIO register setup and controller detection" << std::endl;
 }
 
 // SISetSamplingRate (0x801b3acc): ignored, we don't emulate SI polling timing.
 extern "C" void HLE_SISetSamplingRate_801b3acc(uint32_t msec)
 {
-    RT_LOG(RT_TAG_OS) << "HLE_SISetSamplingRate_801b3acc called: msec=" << msec << ": Stubbed success." << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "HLE_SISetSamplingRate_801b3acc called: msec=" << msec << ": Stubbed success." << std::endl;
 }
 
 // Video Interface (VI) - TV output.
@@ -130,7 +130,7 @@ extern "C" void HLE_SISetSamplingRate_801b3acc(uint32_t msec)
 extern "C" uint32_t HLE_VIGetTvFormat_801bacd8()
 {
     // VI_NTSC = 0, VI_PAL = 1, VI_MPAL = 2
-    RT_LOG(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning VI_PAL (1)" << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning VI_PAL (1)" << std::endl;
     return 1;
 }
 
@@ -141,7 +141,7 @@ PPC_NATIVE_OVERRIDE_VOID(801B3ACC, HLE_SISetSamplingRate_801b3acc, (uint32_t mse
 // no-op and return success so boot doesn't stall.
 extern "C" uint32_t OS____InitMemoryProtection_801a7dfc(uint32_t r3, uint32_t r4, uint32_t r5, uint32_t r6, uint32_t r7, uint32_t r8)
 {
-    RT_LOG(RT_TAG_OS) << "OS____InitMemoryProtection_801a7dfc called (stubbed): r3=0x" << std::hex << r3 << std::dec << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "OS____InitMemoryProtection_801a7dfc called (stubbed): r3=0x" << std::hex << r3 << std::dec << std::endl;
 
     return 0;
 }
@@ -159,7 +159,7 @@ extern "C" uint32_t OS__GetConsoleType_8019f33c(uint32_t /*r4*/, uint32_t /*r5*/
         physicalMem2Size == kRetailMem2Size ? 0x00000012u : 0x10000012u;
     static std::atomic<bool> logged{false};
     if (!logged.exchange(true)) {
-        RT_LOG(RT_TAG_OS) << "OSGetConsoleType: MEM2="
+        RT_LOG_INFO(RT_TAG_OS) << "OSGetConsoleType: MEM2="
                   << (physicalMem2Size / (1024u * 1024u))
                   << " MB, returning 0x" << std::hex << consoleType << std::dec << std::endl;
     }
@@ -176,7 +176,7 @@ extern "C" uint32_t OSGetResetCode_801a8a50()
     // Log occasionally just to track boot flow
     static bool logged = false;
     if (!logged) {
-        RT_LOG(RT_TAG_OS) << "OSGetResetCode_801a8a50 called: returning 0 (Cold Boot)" << std::endl;
+        RT_LOG_INFO(RT_TAG_OS) << "OSGetResetCode_801a8a50 called: returning 0 (Cold Boot)" << std::endl;
         logged = true;
     }
     return 0; 
@@ -192,7 +192,7 @@ extern "C" uint32_t __OSInitSTM_HLE_801ab848(CpuContext* ctx)
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
     if (!cpu) return 0;
 
-    RT_LOG(RT_TAG_OS) << "__OSInitSTM_HLE_801ab848 called: initializing STM state" << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "__OSInitSTM_HLE_801ab848 called: initializing STM state" << std::endl;
 
     // R13 (SDA2) holds the base for small data variables
     const uint32_t r13 = cpu->gpr[13];
@@ -229,7 +229,7 @@ PPC_NATIVE_OVERRIDE(801AB848, __OSInitSTM_HLE_801ab848, uint32_t, (CpuContext* c
 
 extern "C" void OS____PSInit_801a04a0()
 {
-    RT_LOG(RT_TAG_OS) << "OS____PSInit_801a04a0 called (stubbed)" << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "OS____PSInit_801a04a0 called (stubbed)" << std::endl;
 }
 
 PPC_NATIVE_OVERRIDE_VOID(801A04A0, OS____PSInit_801a04a0, (), ());
@@ -238,7 +238,7 @@ PPC_NATIVE_OVERRIDE_VOID(801A04A0, OS____PSInit_801a04a0, (), ());
 
 extern "C" void __init_hardware_80006348()
 {
-    RT_LOG(RT_TAG_OS) << "__init_hardware_80006348 called (stubbed)" << std::endl;
+    RT_LOG_INFO(RT_TAG_OS) << "__init_hardware_80006348 called (stubbed)" << std::endl;
 }
 
 PPC_NATIVE_OVERRIDE_VOID(80006348,__init_hardware_80006348, (), ());
@@ -250,7 +250,7 @@ PPC_NATIVE_OVERRIDE_VOID(80006348,__init_hardware_80006348, (), ());
 // Each PPC_NATIVE_OVERRIDE_VOID line stays written out per stub (not looped) because the
 // translator text-scans them to decide which addresses to skip translating.
 #define PPC_SPR_STUB_BODY(name, message) \
-    extern "C" void name() { RT_LOG(RT_TAG_OS) << message << std::endl; }
+    extern "C" void name() { RT_LOG_INFO(RT_TAG_OS) << message << std::endl; }
 
 PPC_SPR_STUB_BODY(PPCMfhid0_8012e574, "PPCMfhid0 called (stubbed) - Move From HID0")
 PPC_NATIVE_OVERRIDE_VOID(8012e574, PPCMfhid0_8012e574, (), ());
@@ -262,7 +262,7 @@ extern "C" void PPCMtdec_8012e594()
 {
     static std::atomic<int> logCount{0};
     if (logCount.fetch_add(1) < 4) {
-        RT_LOG(RT_TAG_OS) << "PPCMtdec called (stubbed) - Move To Decrementer" << std::endl;
+        RT_LOG_INFO(RT_TAG_OS) << "PPCMtdec called (stubbed) - Move To Decrementer" << std::endl;
     }
     // We don't simulate decrementer exceptions, so pump due alarms here instead. Capped at
     // 32, not 1: a single alarm let unrelated periodic alarms backlog and delay
@@ -321,7 +321,7 @@ extern "C" void PPCMthid2_8012e638(CpuContext* ctx)
 
     static std::atomic<int> logCount{0};
     if (logCount.fetch_add(1) < 4) {
-        RT_LOG(RT_TAG_OS) << "PPCMthid2 set HID2=0x" << std::hex << cpu->hid2 << std::dec << std::endl;
+        RT_LOG_INFO(RT_TAG_OS) << "PPCMthid2 set HID2=0x" << std::hex << cpu->hid2 << std::dec << std::endl;
     }
 }
 PPC_NATIVE_OVERRIDE_VOID(8012e638, PPCMthid2_8012e638, (CpuContext* ctx), (ctx));

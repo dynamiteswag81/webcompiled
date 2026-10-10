@@ -409,8 +409,7 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
     const char* fopenMode = "rb";
     if (mode == 2 || mode == 3) {
         if (!PathExists(hostPath)) {
-            LogNandWarning("IOS_Open", "'%s' does not exist; open mode %u never creates it",
-                    HostPathText(hostPath).c_str(), mode);
+            LogNandNotFound("IOS_Open", hostPath, "write open, IOS never creates on open");
             return ISFS_ENOENT;
         }
         fopenMode = "r+b";      // Write-only opens still need read for seeks
@@ -419,7 +418,11 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
     FILE* file = NandFopen(hostPath, fopenMode);
 
     if (!file) {
-        LogNandError("IOS_Open", "FAILED to open '%s'", HostPathText(hostPath).c_str());
+        if (!PathExists(hostPath)) {
+            LogNandNotFound("IOS_Open", hostPath, "read open, the game handles ENOENT");
+        } else {
+            LogNandError("IOS_Open", "FAILED to open '%s'", HostPathText(hostPath).c_str());
+        }
         return ISFS_ENOENT;
     }
     

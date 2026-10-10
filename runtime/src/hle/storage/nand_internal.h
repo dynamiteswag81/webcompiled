@@ -57,6 +57,12 @@ constexpr uint32_t kNandTitleIdLo = 0x524D4350; // "RMCP" fallback
 // the split records intent and is the single place to add filtering later.
 void LogNandError(const char* func, const char* fmt, ...);
 void LogNandWarning(const char* func, const char* fmt, ...);
+// A probe for a file that does not exist on the NAND. Games open optional files
+// (settings, save slots, caches) and handle the NOEXISTS result themselves, so on
+// a fresh NAND this is routine, not a failure: informational level (stdout on the
+// web) and only the first miss per distinct path is printed. Call it only when the
+// path really is absent; any other open failure stays a LogNandError.
+void LogNandNotFound(const char* func, const std::filesystem::path& hostPath, const char* detail);
 
 // An empty optional means continue opening normally; otherwise return the
 // supplied NAND/IOS error without exposing a failed scan as a missing save.
