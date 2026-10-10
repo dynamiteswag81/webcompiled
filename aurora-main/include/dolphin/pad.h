@@ -225,6 +225,19 @@ BOOL PADSetKeyAxisBindings(u32 port, PADKeyAxisBinding bindings[PAD_BUTTON_COUNT
 PADKeyAxisBinding* PADGetKeyAxisBindings(u32 port, u32* axisCount);
 void PADClearKeyBindings(u32 port);
 void PADSetKeyboardActive(u32 port, BOOL active);
+/* Added for the web build. Default keyboard bindings for a port: what PADInit gives it while no
+ * keyboard_bindings.dat exists (saved bindings always win). The bindings are matched by padButton /
+ * padAxis; unlisted controls stay unbound. `active` turns the keyboard on for that port by default. */
+void PADSetDefaultKeyBindings(u32 port, const PADKeyButtonBinding* buttons, u32 buttonCount,
+                              const PADKeyAxisBinding* axes, u32 axisCount, BOOL active);
+BOOL PADHasDefaultKeyBindings(u32 port);
+/* Puts the port's keys back to its defaults (blank unless PADSetDefaultKeyBindings ran). */
+void PADRestoreDefaultKeyBindings(u32 port);
+BOOL PADIsKeyboardActive(u32 port);
+/* Off (default): an active keyboard replaces the gamepad on its port. On: keyboard and gamepad
+ * drive the port together (buttons ORed, the larger stick deflection / trigger value wins). */
+void PADSetKeyboardMergesController(BOOL merge);
+BOOL PADGetKeyboardMergesController();
 
 PADDeadZones* PADGetDeadZones(u32 port);
 const char* PADGetButtonName(PADButton);

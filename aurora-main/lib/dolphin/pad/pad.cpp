@@ -1,6 +1,7 @@
 #include "../../fs_helper.hpp"
 #include "../../input.hpp"
 #include "../../internal.hpp"
+#include "pad_merge.hpp"
 #include <dolphin/pad.h>
 #include <dolphin/si.h>
 #include <SDL3/SDL_mouse.h>
@@ -277,6 +278,35 @@ struct PADKeyboardState {
 
 std::array<PADKeyboardState, PAD_MAX_CONTROLLERS> g_keyboardBindings;
 
+// What PADInit (and a missing keyboard_bindings.dat) gives each port. Blank and
+// inactive unless the application installs a layout with PADSetDefaultKeyBindings
+// (the web build puts a default keyboard layout on port 1).
+struct PADKeyboardDefaults {
+  std::array<PADKeyButtonBinding, PAD_BUTTON_COUNT> buttons;
+  std::array<PADKeyAxisBinding, PAD_AXIS_COUNT> axes;
+  bool active = false;
+  bool installed = false;
+};
+
+std::array<PADKeyboardDefaults, PAD_MAX_CONTROLLERS>& keyboard_defaults() {
+  static std::array<PADKeyboardDefaults, PAD_MAX_CONTROLLERS> defaults = [] {
+    std::array<PADKeyboardDefaults, PAD_MAX_CONTROLLERS> d{};
+    for (auto& port : d) {
+      port.buttons = g_defaultKeys;
+      port.axes = g_defaultKeyAxis;
+    }
+    return d;
+  }();
+  return defaults;
+}
+
+// Keyboard bindings normally replace the gamepad on their port. With merging on,
+// both drive the port at once (buttons ORed, larger stick deflection wins).
+bool g_keyboardMergesController = false;
+// keyboard_bindings.dat was read: the user's saved bindings win over defaults
+// installed later.
+bool g_keyboardBindingsFromFile = false;
+
 struct PADCLampRegion {
   uint8_t minTrigger;
   uint8_t maxTrigger;
@@ -354,10 +384,14 @@ BOOL PADInit() {
   }
   g_initialized = true;
 
-  std::for_each(g_keyboardBindings.begin(), g_keyboardBindings.end(), [](auto& state) {
-    state.m_buttonMapping = g_defaultKeys;
-    state.m_axisMapping = g_defaultKeyAxis;
-  });
+  // keyboard_bindings.dat can already have been read (PADRead before PADInit);
+  // the saved bindings win over the defaults then.
+  for (size_t port = 0; port < g_keyboardBindings.size() && !g_keyboardBindingsFromFile; ++port) {
+    const auto& defaults = keyboard_defaults()[port];
+    g_keyboardBindings[port].m_buttonMapping = defaults.buttons;
+    g_keyboardBindings[port].m_axisMapping = defaults.axes;
+    g_keyboardBindings[port].m_mappingsSet = defaults.active;
+  }
 
   return true;
 }
@@ -737,71 +771,23 @@ u32 PADRead(PADStatus* status) {
     }
 
     status[i].err = PAD_ERR_NONE;
-    if (g_keyboardBindings[i].m_mappingsSet && SDL_GetKeyboardFocus() != nullptr) {
-      std::for_each(g_keyboardBindings[i].m_buttonMapping.begin(), g_keyboardBindings[i].m_buttonMapping.end(),
-                    [&kbState, &numKeys, &i, &status](const PADKeyButtonBinding& mapping) {
-            if (mapping.scancode > PAD_KEY_INVALID && mapping.scancode < numKeys && kbState[mapping.scancode]) {
-              status[i].button |= mapping.padButton;
-            } else if (is_mouse_scancode(mapping.scancode) && is_mouse_button_pressed(mapping.scancode)) {
-              status[i].button |= mapping.padButton;
+    const bool keyboardActive = g_keyboardBindings[i].m_mappingsSet;
+    // Without merging, an active keyboard replaces the gamepad on its port.
+    const bool readController = controller != nullptr && (!keyboardActive || g_keyboardMergesController);
+    PADStatus keyboardStatus{};
+    if (keyboardActive && SDL_GetKeyboardFocus() != nullptr) {
+      const auto& bindings = g_keyboardBindings[i];
+      keyboardStatus = aurora::pad::keyboard_status(
+          bindings.m_buttonMapping.data(), bindings.m_buttonMapping.size(), bindings.m_axisMapping.data(),
+          bindings.m_axisMapping.size(), [kbState, numKeys](const s32 scancode) {
+            if (scancode > PAD_KEY_INVALID) {
+              return scancode < numKeys && kbState[scancode];
             }
+            return is_mouse_scancode(scancode) && is_mouse_button_pressed(scancode);
           });
-
-      int lx = 0, ly = 0, rx = 0, ry = 0, tl = 0, tr = 0;
-      for (const auto& binding : g_keyboardBindings[i].m_axisMapping) {
-        bool pressed = false;
-        if (binding.scancode > PAD_KEY_INVALID) {
-          pressed = binding.scancode < numKeys && kbState[binding.scancode];
-        } else if (is_mouse_scancode(binding.scancode)) {
-          pressed = is_mouse_button_pressed(binding.scancode);
-        }
-        if (!pressed) {
-          continue;
-        }
-        switch (binding.padAxis) {
-        case PAD_AXIS_LEFT_X_POS:
-          lx += 127;
-          break;
-        case PAD_AXIS_LEFT_X_NEG:
-          lx -= 127;
-          break;
-        case PAD_AXIS_LEFT_Y_POS:
-          ly += 127;
-          break;
-        case PAD_AXIS_LEFT_Y_NEG:
-          ly -= 127;
-          break;
-        case PAD_AXIS_RIGHT_X_POS:
-          rx += 127;
-          break;
-        case PAD_AXIS_RIGHT_X_NEG:
-          rx -= 127;
-          break;
-        case PAD_AXIS_RIGHT_Y_POS:
-          ry += 127;
-          break;
-        case PAD_AXIS_RIGHT_Y_NEG:
-          ry -= 127;
-          break;
-        case PAD_AXIS_TRIGGER_L:
-          tl += 255;
-          break;
-        case PAD_AXIS_TRIGGER_R:
-          tr += 255;
-          break;
-        default:
-          break;
-        }
-      }
-      status[i].stickX = static_cast<s8>(std::clamp(static_cast<int>(status[i].stickX) + lx, -127, 127));
-      status[i].stickY = static_cast<s8>(std::clamp(static_cast<int>(status[i].stickY) + ly, -127, 127));
-      status[i].substickX = static_cast<s8>(std::clamp(static_cast<int>(status[i].substickX) + rx, -127, 127));
-      status[i].substickY = static_cast<s8>(std::clamp(static_cast<int>(status[i].substickY) + ry, -127, 127));
-      status[i].triggerLeft = static_cast<u8>(std::min(static_cast<int>(status[i].triggerLeft) + tl, 255));
-      status[i].triggerRight = static_cast<u8>(std::min(static_cast<int>(status[i].triggerRight) + tr, 255));
     }
 
-    if (controller && !g_keyboardBindings[i].m_mappingsSet) {
+    if (readController) {
       EnsureMappingLoaded(controller);
 
       // Wii U Pro Controller raw D-pad fallback. SDL's HIDAPI Wii driver posts
@@ -995,6 +981,11 @@ u32 PADRead(PADStatus* status) {
                           controller->m_ledBlue);
         controller->m_isColorDirty = false;
       }
+    }
+
+    if (keyboardActive) {
+      // The controller half (if any) is already in status[i].
+      aurora::pad::merge_status(status[i], keyboardStatus);
     }
 
     if (inputBlocked) {
@@ -1364,6 +1355,62 @@ void PADClearKeyBindings(const u32 port) {
   g_keyboardBindings[port].m_mappingsSet = false;
 }
 
+void PADSetDefaultKeyBindings(const u32 port, const PADKeyButtonBinding* buttons, const u32 buttonCount,
+                              const PADKeyAxisBinding* axes, const u32 axisCount, const BOOL active) {
+  if (port >= PAD_MAX_CONTROLLERS) {
+    return;
+  }
+  auto& defaults = keyboard_defaults()[port];
+  // Keep the slot order of g_defaultKeys / g_defaultKeyAxis (keyboard_bindings.dat
+  // validates against it) and only take the key of each control.
+  defaults.buttons = g_defaultKeys;
+  defaults.axes = g_defaultKeyAxis;
+  for (u32 i = 0; buttons != nullptr && i < buttonCount; ++i) {
+    for (auto& slot : defaults.buttons) {
+      if (slot.padButton == buttons[i].padButton) {
+        slot.scancode = buttons[i].scancode;
+      }
+    }
+  }
+  for (u32 i = 0; axes != nullptr && i < axisCount; ++i) {
+    for (auto& slot : defaults.axes) {
+      if (slot.padAxis == axes[i].padAxis) {
+        slot.scancode = axes[i].scancode;
+        slot.influence = axes[i].influence;
+      }
+    }
+  }
+  defaults.active = active != FALSE;
+  defaults.installed = true;
+  // Saved bindings win; otherwise the port takes the new defaults right away,
+  // whether or not PADInit already ran.
+  if (!g_keyboardBindingsFromFile) {
+    g_keyboardBindings[port].m_buttonMapping = defaults.buttons;
+    g_keyboardBindings[port].m_axisMapping = defaults.axes;
+    g_keyboardBindings[port].m_mappingsSet = defaults.active;
+  }
+}
+
+BOOL PADHasDefaultKeyBindings(const u32 port) {
+  return port < PAD_MAX_CONTROLLERS && keyboard_defaults()[port].installed ? TRUE : FALSE;
+}
+
+void PADRestoreDefaultKeyBindings(const u32 port) {
+  if (port >= PAD_MAX_CONTROLLERS) {
+    return;
+  }
+  g_keyboardBindings[port].m_buttonMapping = keyboard_defaults()[port].buttons;
+  g_keyboardBindings[port].m_axisMapping = keyboard_defaults()[port].axes;
+}
+
+BOOL PADIsKeyboardActive(const u32 port) {
+  return port < PAD_MAX_CONTROLLERS && g_keyboardBindings[port].m_mappingsSet ? TRUE : FALSE;
+}
+
+void PADSetKeyboardMergesController(const BOOL merge) { g_keyboardMergesController = merge != FALSE; }
+
+BOOL PADGetKeyboardMergesController() { return g_keyboardMergesController ? TRUE : FALSE; }
+
 constexpr uint32_t k_keyboardMagic = SBIG('KBND');
 constexpr int32_t k_keyboardVersion = 3;
 
@@ -1394,6 +1441,7 @@ static void load_keyboard_bindings() {
   const int64_t dataStart = SDL_TellIO(file) + 31 & ~31;
   SDL_SeekIO(file, dataStart, SDL_IO_SEEK_SET);
 
+  g_keyboardBindingsFromFile = true;
   for (uint32_t port = 0; port < g_keyboardBindings.size(); ++port) {
     auto& [buttonMapping, axisMapping, mappingsSet] = g_keyboardBindings[port];
     SDL_ReadIO(file, &mappingsSet, sizeof(bool));

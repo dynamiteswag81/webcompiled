@@ -61,6 +61,7 @@
 #if defined(__EMSCRIPTEN__)
 // [web] web/js/library_mkw_host.js: shows a fatal report in the page's error overlay.
 extern "C" void mkw_host_report_fatal(const char* message);
+#include "web_input.h"
 #endif
 #include "gx_guest_write.h"
 #include "memory.h"
@@ -1460,6 +1461,10 @@ int RuntimeMain(int argc, char** argv) {
         // aurora_initialize does; a Bluetooth Wii Remote paired before launch must be
         // visible on that first scan.
         WiiRemoteInput::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled(true));
+#if defined(__EMSCRIPTEN__)
+        // [web] Keyboard on port 1 with no setup, merged with a gamepad there; page input view.
+        WebInput::Initialize();
+#endif
 
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
         if (auroraInfo.initializationStatus != AURORA_INITIALIZATION_SUCCESS) {

@@ -158,8 +158,22 @@ try {
     // help overlay
     await page.keyboard.press('Shift+?');
     check(await page.isVisible('#help'), '? opens the controls overlay');
-    check((await page.textContent('#help')).includes('Placeholder'), 'help marks the mapping as placeholder');
+    check(!(await page.textContent('#help')).includes('Placeholder'), 'help no longer calls the mapping a placeholder');
+    const kbRows = await page.$$eval('#keyboard-rows tr', (rows) => rows.map((r) => [...r.cells].map((c) => c.textContent.trim())));
+    const kbRow = (gc) => kbRows.find((r) => r[1] === gc) || [];
+    check(kbRow('A')[0] === 'X' && /Accelerate/.test(kbRow('A')[2]), `keyboard table: X = A (accelerate) (${JSON.stringify(kbRow('A'))})`);
+    check(kbRow('B')[0] === 'Z' && kbRow('R')[0] === 'Shift' && kbRow('L')[0] === 'Space' && kbRow('Start')[0] === 'Enter',
+      'keyboard table: Z = B, Shift = R, Space = L, Enter = Start');
+    check(kbRow('X')[0] === 'C' && kbRow('Y')[0] === 'V' && kbRow('Z')[0] === 'Q', 'keyboard table: C = X, V = Y, Q = Z');
+    check(kbRow('Control stick')[0] === '→ ← ↑ ↓' && kbRow('C-stick')[0] === 'I J K L', 'keyboard table: arrows = stick, IJKL = C-stick');
+    check(kbRows.length === 11 && await page.evaluate(() => window.WiiCompiledInput.KEYBOARD_LAYOUT.length === 22),
+      `keyboard table generated from the layout (${kbRows.length} rows)`);
+    const padRows = await page.$$eval('#pad-layout-rows tr', (rows) => rows.map((r) => [...r.cells].map((c) => c.textContent.trim())));
+    check(padRows.some((r) => r.join('|') === 'A|A|Cross|B') && padRows.some((r) => r.join('|') === 'R|RT|R2|ZR'),
+      'gamepad table lists the Xbox / PlayStation / Switch layouts');
     check((await page.textContent('#help')).toLowerCase().includes('gamepad api'), 'help mentions the Gamepad API');
+    check((await page.textContent('#gamepad-status')).includes('No gamepad'), 'no gamepad reported without one');
+    check((await page.textContent('#help')).includes('F10'), 'help explains F10 rebinding');
     await shot(page, '5-help');
     await page.keyboard.press('Escape');
     check(!(await page.isVisible('#help')), 'Escape closes the controls overlay');
@@ -169,8 +183,27 @@ try {
     check(!(await page.isVisible('#help')), 'H closes the controls overlay');
     await page.click('#btn-help');
     check(await page.isVisible('#help'), 'Controls button opens the overlay');
+    await page.click('#input-debug-toggle');
+    check(await page.isVisible('#input-debug'), 'debug toggle shows the input debug view');
     await page.click('#btn-help-close');
     check(!(await page.isVisible('#help')), 'Close button closes the overlay');
+    check(await page.evaluate(() => document.activeElement === document.getElementById('canvas')),
+      'closing the panel returns focus to the game, not to the toolbar');
+    await page.waitForFunction(() => /No gamepad/.test(document.getElementById('debug-raw').textContent) &&
+      /not read input/.test(document.getElementById('debug-game').textContent), null, { timeout: 3000 });
+    check(true, 'debug view shows browser and game columns while the game runs');
+    await shot(page, '5b-input-debug');
+    await page.click('#btn-debug-close');
+    check(!(await page.isVisible('#input-debug')), 'debug view closes');
+    const f10 = await page.evaluate(() => new Promise((resolve) => {
+      const seen = [];
+      const listener = (e) => seen.push(e.type + ':' + e.code);
+      window.addEventListener('keydown', listener);
+      window.addEventListener('keyup', listener);
+      document.getElementById('btn-settings').click();
+      setTimeout(() => { window.removeEventListener('keydown', listener); window.removeEventListener('keyup', listener); resolve(seen); }, 50);
+    }));
+    check(f10.join(',') === 'keydown:F10,keyup:F10', `Settings button sends F10 (${f10.join(',')})`);
 
     // fullscreen
     await page.click('#btn-fullscreen');
@@ -295,7 +328,14 @@ try {
       return r.left >= 0 && r.right <= innerWidth;
     }), 'phone: help panel fits the viewport width');
     await shot(page, '9-phone-help');
+    await page.click('#input-debug-toggle');
     await page.keyboard.press('Escape');
+    check(await page.isVisible('#input-debug') && await noHScroll(page), 'phone: no horizontal scroll (input debug view)');
+    check(await page.evaluate(() => {
+      const r = document.getElementById('input-debug').getBoundingClientRect();
+      return r.left >= 0 && r.right <= innerWidth;
+    }), 'phone: input debug view fits the viewport width');
+    await page.click('#btn-debug-close');
     await page.evaluate(() => window.WiiCompiledUI.showError('manual', 'x'.repeat(300)));
     check(await noHScroll(page), 'phone: no horizontal scroll (error)');
     await shot(page, '10-phone-error');

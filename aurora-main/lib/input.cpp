@@ -384,12 +384,41 @@ Sint32 get_instance_for_player(uint32_t player) noexcept {
   return {};
 }
 
+#ifdef __EMSCRIPTEN__
+} // namespace aurora::input
+// SDL internals (static SDL3 3.4, src/joystick/SDL_joystick_c.h); see reseed_browser_xinput_axes.
+extern "C" void SDL_SendJoystickAxis(Uint64 timestamp, SDL_Joystick* joystick, Uint8 axis, Sint16 value);
+namespace aurora::input {
+namespace {
+// SDL's browser backend tags a pad whose Gamepad.id says "XInput" (Chrome on Windows) with SDL's
+// XInput GUID marker, and SDL_OpenJoystick then seeds the axis rest values in XInput order
+// (triggers on axes 2 and 5). The browser's standard mapping has the right stick X on axis 2 and
+// the left trigger on axis 4, so until those axes move the C-stick reads full left. Put the
+// browser-order rest values back: sticks centred, triggers released.
+void reseed_browser_xinput_axes(SDL_Gamepad* gamepad) {
+  SDL_Joystick* joystick = SDL_GetGamepadJoystick(gamepad);
+  if (joystick == nullptr || SDL_GetJoystickGUID(joystick).data[14] != 'x' || SDL_GetNumJoystickAxes(joystick) < 6) {
+    return;
+  }
+  SDL_LockJoysticks();
+  const Uint64 now = SDL_GetTicksNS();
+  for (Uint8 axis = 0; axis < 6; ++axis) {
+    SDL_SendJoystickAxis(now, joystick, axis, axis >= 4 ? SDL_JOYSTICK_AXIS_MIN : 0);
+  }
+  SDL_UnlockJoysticks();
+}
+} // namespace
+#endif
+
 SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
   if (g_GameControllers.contains(which)) {
     return which;
   }
   auto* ctrl = SDL_OpenGamepad(which);
   if (ctrl != nullptr) {
+#ifdef __EMSCRIPTEN__
+    reseed_browser_xinput_axes(ctrl);
+#endif
     GameController controller;
     controller.m_controller = ctrl;
     controller.m_index = which;
@@ -513,6 +542,14 @@ void controller_rumble(uint32_t instance, uint16_t low_freq_intensity, uint16_t 
     if (it->second.m_gameCubeUseOrdinaryStop && low_freq_intensity == 0 && high_freq_intensity == 0) {
       high_freq_intensity = 1;
     }
+#ifdef __EMSCRIPTEN__
+    // SDL's browser backend plays each request as a 3 s Gamepad.vibrationActuator effect, and
+    // SDL only re-sends a rumble that has a duration. "Until stopped" (0) becomes SDL's longest
+    // duration so the effect is renewed every 2 s; an explicit stop still ends it at once.
+    if (duration_ms == 0 && (low_freq_intensity != 0 || high_freq_intensity != 0)) {
+      duration_ms = 0xFFFF;
+    }
+#endif
     SDL_RumbleGamepad(it->second.m_controller, low_freq_intensity, high_freq_intensity, duration_ms);
   }
 }

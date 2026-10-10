@@ -17,7 +17,20 @@
   <div id="toolbar" class="toolbar" hidden>
     <button type="button" id="btn-help" class="chip" aria-haspopup="dialog" aria-controls="help" title="Controls (? or H)">Controls</button>
     <button type="button" id="btn-fullscreen" class="chip" title="Toggle fullscreen">Fullscreen</button>
+    <button type="button" id="btn-settings" class="chip" title="Game settings bar (F10)">Settings</button>
   </div>
+
+  <!-- Input debug view: raw navigator.getGamepads() next to what the game's PADRead returns -->
+  <section id="input-debug" class="debug-panel" aria-label="Input debug view" hidden>
+    <div class="debug-head">
+      <strong>Input debug</strong>
+      <button type="button" id="btn-debug-close" class="chip">Close</button>
+    </div>
+    <div class="debug-cols">
+      <div><h4>Browser (navigator.getGamepads)</h4><pre id="debug-raw">No gamepad.</pre></div>
+      <div><h4>Game (PADRead, per player)</h4><pre id="debug-game">The game has not read input yet.</pre></div>
+    </div>
+  </section>
 
   <!-- Loading / compatibility / click-to-start -->
   <section id="loader" class="overlay" aria-live="polite">
@@ -55,24 +68,27 @@
         <h2 id="help-title">Controls</h2>
         <button type="button" id="btn-help-close" class="chip" aria-label="Close controls">Close</button>
       </div>
-      <p class="notice notice-warn"><strong>Placeholder:</strong> the keyboard mapping is not final and may not match what the game actually uses yet.</p>
+      <p class="hint">The keyboard and the first gamepad both control player 1, together. More gamepads join as players 2 to 4.</p>
+      <h3>Keyboard (player 1)</h3>
       <div class="table-wrap">
         <table id="controls-table">
-          <thead><tr><th scope="col">Action</th><th scope="col">Keyboard (placeholder)</th></tr></thead>
-          <tbody>
-            <tr><td>Steer</td><td><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> / <kbd>→</kbd></td></tr>
-            <tr><td>Accelerate</td><td><kbd>W</kbd> or <kbd>↑</kbd></td></tr>
-            <tr><td>Brake / reverse</td><td><kbd>S</kbd> or <kbd>↓</kbd></td></tr>
-            <tr><td>Drift</td><td><kbd>Shift</kbd></td></tr>
-            <tr><td>Use item</td><td><kbd>Space</kbd></td></tr>
-            <tr><td>Look back</td><td><kbd>B</kbd></td></tr>
-            <tr><td>Pause</td><td><kbd>Esc</kbd> / <kbd>Enter</kbd></td></tr>
-          </tbody>
+          <thead><tr><th scope="col">Key</th><th scope="col">GameCube</th><th scope="col">In the game</th></tr></thead>
+          <tbody id="keyboard-rows"></tbody>
         </table>
       </div>
+      <p id="keyboard-source" class="hint">Default layout.</p>
       <h3>Gamepads</h3>
-      <p>Controllers work through the browser Gamepad API. Connect one and press any button so the browser exposes it to the page.</p>
-      <p id="gamepad-status" class="hint">No gamepad detected.</p>
+      <p>Controllers work through the browser Gamepad API (Xbox, PlayStation, Switch Pro and other standard pads). Connect one and press any button so the browser exposes it to the page.</p>
+      <ul id="pad-list" class="pad-list"><li id="gamepad-status" class="hint">No gamepad detected.</li></ul>
+      <div class="table-wrap">
+        <table id="pad-layout-table">
+          <thead><tr><th scope="col">GameCube</th><th scope="col">Xbox</th><th scope="col">PlayStation</th><th scope="col">Switch Pro</th></tr></thead>
+          <tbody id="pad-layout-rows"></tbody>
+        </table>
+      </div>
+      <h3>Rebinding</h3>
+      <p><kbd>F10</kbd> (or the Settings button) opens the game's settings bar: key and button mapping, which pad is which player, vibration. Changes are saved in this browser.</p>
+      <label class="toggle"><input type="checkbox" id="input-debug-toggle"> Show the input debug view (what the browser reports next to what the game receives)</label>
       <h3>Page shortcuts</h3>
       <p><kbd>?</kbd> or <kbd>H</kbd> toggles this panel, <kbd>Esc</kbd> closes it. Use the Fullscreen button for fullscreen.</p>
     </div>

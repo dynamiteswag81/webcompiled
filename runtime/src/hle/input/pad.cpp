@@ -14,6 +14,10 @@
 #include <SDL3/SDL_gamepad.h>
 #include <dolphin/pad.h>
 
+#if defined(__EMSCRIPTEN__)
+#include "web_input.h"
+#endif
+
 namespace {
 
 std::atomic<bool> g_rumbleEnabled{true};
@@ -118,6 +122,10 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
 
     FillTriggersHeldByButtons(statuses);
     InputBindings::Apply(statuses);
+#if defined(__EMSCRIPTEN__)
+    // [web] The page's input debug view shows exactly these statuses.
+    WebInput::PublishPadStatus(statuses, PAD_CHANMAX, rumbleMask);
+#endif
 
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
@@ -149,6 +157,9 @@ extern "C" void PAD__ControlMotor_HLE(int32_t chan, uint32_t command)
     if (command == PAD_MOTOR_RUMBLE && !g_rumbleEnabled.load(std::memory_order_relaxed)) {
         command = PAD_MOTOR_STOP;
     }
+#if defined(__EMSCRIPTEN__)
+    WebInput::NoteMotor(static_cast<uint32_t>(chan), command);
+#endif
     PADControlMotor(chan, command);
 }
 PPC_NATIVE_OVERRIDE_VOID(801AF908, PAD__ControlMotor_HLE, (int32_t chan, uint32_t command), (chan, command));

@@ -607,7 +607,17 @@ bool DrawKeyboardSettings(uint32_t port) {
         });
     }
     if (!enabled) return false;
-    ImGui::TextDisabled("Replaces the gamepad on this port. F10 opens settings.");
+    ImGui::TextDisabled(PADGetKeyboardMergesController()
+                            ? "Works together with the gamepad on this port. F10 opens settings."
+                            : "Replaces the gamepad on this port. F10 opens settings.");
+    if (PADHasDefaultKeyBindings(port)) {
+        // [web] Port 1 starts with the browser's default layout (web_input_layout.h).
+        if (ImGui::Button("Restore default keys")) {
+            PADRestoreDefaultKeyBindings(port);
+            PADSerializeMappings();
+        }
+        ImGui::SameLine();
+    }
     if (ImGui::Button("Use WASD + mouse preset") || usePreset) {
         const std::array<int, PAD_BUTTON_COUNT> keys = {
             PAD_KEY_MOUSE_LEFT, SDL_SCANCODE_SPACE, SDL_SCANCODE_E, SDL_SCANCODE_Q,
@@ -757,7 +767,8 @@ void DrawControllerSettings() {
 
     ImGui::Separator();
     const uint32_t selectedGamePort = static_cast<uint32_t>(g_controllerPort);
-    if (DrawKeyboardSettings(selectedGamePort)) {
+    // A keyboard replaces the gamepad unless the two are merged (the web build merges them).
+    if (DrawKeyboardSettings(selectedGamePort) && !PADGetKeyboardMergesController()) {
         return;
     }
     ImGui::Separator();

@@ -283,9 +283,13 @@
     el.help.hidden = !open;
     if (open) {
       helpReturnFocus = document.activeElement;
+      renderControls();
       el.helpClose.focus();
     } else {
-      const target = helpReturnFocus && document.contains(helpReturnFocus) && helpReturnFocus !== document.body ? helpReturnFocus : canvas;
+      // Back to the game, not to a toolbar button: Space / Enter there would press the button.
+      const usable = helpReturnFocus && document.contains(helpReturnFocus) && helpReturnFocus !== document.body &&
+        !el.toolbar.contains(helpReturnFocus);
+      const target = usable ? helpReturnFocus : canvas;
       if (target && target.focus) target.focus();
     }
   }
@@ -295,7 +299,7 @@
   el.help.addEventListener('click', (ev) => { if (ev.target === el.help) setHelp(false); });
 
   // Capture phase on window: runs before SDL's listeners so that, while the panel is open,
-  // the game does not also react to the keys. (Keyboard mapping is not final; see index.html.)
+  // the game does not also react to the keys.
   window.addEventListener('keydown', function (ev) {
     if (!el.error.hidden) return; // error overlay: normal browser behaviour (text selection etc.)
     const tag = ev.target && ev.target.tagName;
@@ -320,15 +324,287 @@
     if (!el.help.hidden) ev.stopImmediatePropagation();
   }, true);
 
-  function updateGamepads() {
-    const pads = (navigator.getGamepads ? Array.from(navigator.getGamepads()) : []).filter(Boolean);
-    el.gamepadStatus.textContent = pads.length
-      ? pads.length + ' gamepad' + (pads.length > 1 ? 's' : '') + ' detected: ' + pads.map((p) => p.id).join('; ')
-      : 'No gamepad detected.';
+  // ---------------------------------------------------------------------------------------
+  // Controls panel: keyboard layout, gamepads, input debug view
+  // ---------------------------------------------------------------------------------------
+  // Mirror of runtime/include/web_input_layout.h: the keyboard layout player 1 gets with no setup
+  // (merged with the first gamepad). web/tests/input/run_input_test.sh checks that this copy and
+  // the C++ table agree; keep it plain JSON between the markers. Once the game runs, the panel
+  // shows the live bindings it reports instead (Module.mkwInput, web/js/library_mkw_input.js).
+  const KEYBOARD_LAYOUT = /*BEGIN_KEYBOARD_LAYOUT*/[
+    {"control":"Stick right","code":"ArrowRight","key":"→","sdlName":"Right","action":"Steer / menus"},
+    {"control":"Stick left","code":"ArrowLeft","key":"←","sdlName":"Left","action":"Steer / menus"},
+    {"control":"Stick up","code":"ArrowUp","key":"↑","sdlName":"Up","action":"Menus"},
+    {"control":"Stick down","code":"ArrowDown","key":"↓","sdlName":"Down","action":"Menus"},
+    {"control":"A","code":"KeyX","key":"X","sdlName":"X","action":"Accelerate / confirm"},
+    {"control":"B","code":"KeyZ","key":"Z","sdlName":"Z","action":"Brake, reverse / back"},
+    {"control":"R","code":"ShiftLeft","key":"Shift","sdlName":"Left Shift","action":"Drift / hop"},
+    {"control":"R analog","code":"ShiftLeft","key":"Shift","sdlName":"Left Shift","action":"Drift / hop"},
+    {"control":"L","code":"Space","key":"Space","sdlName":"Space","action":"Use item"},
+    {"control":"L analog","code":"Space","key":"Space","sdlName":"Space","action":"Use item"},
+    {"control":"Start","code":"Enter","key":"Enter","sdlName":"Return","action":"Pause"},
+    {"control":"X","code":"KeyC","key":"C","sdlName":"C","action":""},
+    {"control":"Y","code":"KeyV","key":"V","sdlName":"V","action":""},
+    {"control":"Z","code":"KeyQ","key":"Q","sdlName":"Q","action":""},
+    {"control":"C-stick up","code":"KeyI","key":"I","sdlName":"I","action":""},
+    {"control":"C-stick left","code":"KeyJ","key":"J","sdlName":"J","action":""},
+    {"control":"C-stick down","code":"KeyK","key":"K","sdlName":"K","action":""},
+    {"control":"C-stick right","code":"KeyL","key":"L","sdlName":"L","action":""},
+    {"control":"D-pad up","code":"KeyW","key":"W","sdlName":"W","action":"Tricks / wheelie"},
+    {"control":"D-pad left","code":"KeyA","key":"A","sdlName":"A","action":"Tricks / wheelie"},
+    {"control":"D-pad down","code":"KeyS","key":"S","sdlName":"S","action":"Tricks / wheelie"},
+    {"control":"D-pad right","code":"KeyD","key":"D","sdlName":"D","action":"Tricks / wheelie"}
+  ]/*END_KEYBOARD_LAYOUT*/;
+  // Default GameCube layout per pad family: aurora's g_defaultButtons* (aurora-main/lib/dolphin/
+  // pad/pad.cpp, positional: bottom face button = A) with the printed names web_input.cpp uses.
+  // L and R are the analog triggers. The input test compares it with what the game reports.
+  const PAD_LAYOUTS = /*BEGIN_PAD_LAYOUTS*/[
+    {"control":"A","xbox":"A","playstation":"Cross","switch":"B"},
+    {"control":"B","xbox":"B","playstation":"Circle","switch":"A"},
+    {"control":"X","xbox":"X","playstation":"Square","switch":"Y"},
+    {"control":"Y","xbox":"Y","playstation":"Triangle","switch":"X"},
+    {"control":"Start","xbox":"Menu","playstation":"Options","switch":"+"},
+    {"control":"Z","xbox":"RB","playstation":"R1","switch":"R"},
+    {"control":"L","xbox":"LT","playstation":"L2","switch":"ZL"},
+    {"control":"R","xbox":"RT","playstation":"R2","switch":"ZR"},
+    {"control":"D-pad Up","xbox":"D-pad up","playstation":"D-pad up","switch":"D-pad up"},
+    {"control":"D-pad Down","xbox":"D-pad down","playstation":"D-pad down","switch":"D-pad down"},
+    {"control":"D-pad Left","xbox":"D-pad left","playstation":"D-pad left","switch":"D-pad left"},
+    {"control":"D-pad Right","xbox":"D-pad right","playstation":"D-pad right","switch":"D-pad right"}
+  ]/*END_PAD_LAYOUTS*/;
+  const FAMILY_NAMES = { xbox: 'Xbox', playstation: 'PlayStation', switch: 'Switch', gamecube: 'GameCube' };
+  const DEBUG_KEY = 'wiicompiled.inputDebug';
+
+  const input = {
+    keyboardRows: $('keyboard-rows'),
+    keyboardSource: $('keyboard-source'),
+    padList: $('pad-list'),
+    padLayoutRows: $('pad-layout-rows'),
+    debugToggle: $('input-debug-toggle'),
+    debug: $('input-debug'),
+    debugClose: $('btn-debug-close'),
+    debugRaw: $('debug-raw'),
+    debugGame: $('debug-game'),
+    settings: $('btn-settings'),
+  };
+  let inputDesc = null; // last port description from the game (web_input.cpp Describe)
+
+  function gameInput() {
+    const m = window.Module;
+    return m && m.mkwInput ? m.mkwInput : null;
   }
-  window.addEventListener('gamepadconnected', updateGamepads);
-  window.addEventListener('gamepaddisconnected', updateGamepads);
-  updateGamepads();
+  function currentDesc() {
+    const api = gameInput();
+    return inputDesc || (api && api.description()) || null;
+  }
+  function browserPads() {
+    try {
+      return (navigator.getGamepads ? Array.from(navigator.getGamepads()) : []).filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+  function kbd(text) {
+    const k = document.createElement('kbd');
+    k.textContent = text;
+    return k;
+  }
+  function cell(row, content) {
+    const td = document.createElement('td');
+    if (Array.isArray(content)) {
+      content.forEach((node, i) => { if (i) td.append(' '); td.append(node); });
+    } else {
+      td.textContent = content;
+    }
+    row.append(td);
+  }
+
+  // Groups the per-direction entries into the rows the panel prints (stick, C-stick, D-pad; L/R
+  // with their analog trigger).
+  function keyboardGroups(liveKeys) {
+    const groups = new Map();
+    for (const entry of KEYBOARD_LAYOUT) {
+      const c = entry.control;
+      const label = c.startsWith('Stick ') ? 'Control stick' : c.startsWith('C-stick ') ? 'C-stick'
+        : c.startsWith('D-pad ') ? 'D-pad' : c.replace(/ analog$/, '');
+      if (!groups.has(label)) groups.set(label, { label: label, keys: [], action: entry.action, changed: false });
+      const g = groups.get(label);
+      let key = entry.key;
+      if (liveKeys) {
+        const live = liveKeys.get(c);
+        if (live !== undefined && live !== entry.sdlName) {
+          key = live || 'unbound';
+          g.changed = true;
+        }
+      }
+      if (!g.keys.includes(key)) g.keys.push(key);
+    }
+    return Array.from(groups.values());
+  }
+
+  function renderKeyboard() {
+    const desc = currentDesc();
+    const port1 = desc && desc.ports && desc.ports[0];
+    const liveKeys = port1 && port1.keyboard ? new Map(port1.keys.map((k) => [k.control, k.key])) : null;
+    input.keyboardRows.textContent = '';
+    for (const g of keyboardGroups(liveKeys)) {
+      const tr = document.createElement('tr');
+      if (g.changed) tr.className = 'changed';
+      cell(tr, g.keys.map(kbd));
+      cell(tr, g.label);
+      cell(tr, g.action || '—');
+      input.keyboardRows.append(tr);
+    }
+    if (!port1) {
+      input.keyboardSource.textContent = 'Default layout. Rebind it with F10 once the game runs; changes are saved in this browser.';
+    } else if (!port1.keyboard) {
+      input.keyboardSource.textContent = 'The keyboard is turned off for player 1 (F10 › Controller › Keyboard and mouse).';
+    } else {
+      input.keyboardSource.textContent = 'Current bindings, read from the game' +
+        (liveKeys && keyboardGroups(liveKeys).some((g) => g.changed) ? ' (changed rows were rebound with F10).' : '.');
+    }
+  }
+
+  function renderPadLayouts() {
+    input.padLayoutRows.textContent = '';
+    const rows = PAD_LAYOUTS.filter((r) => !r.control.startsWith('D-pad'));
+    rows.push({ control: 'D-pad', xbox: 'D-pad', playstation: 'D-pad', switch: 'D-pad' });
+    rows.unshift({ control: 'Control stick', xbox: 'Left stick', playstation: 'Left stick', switch: 'Left stick' },
+      { control: 'C-stick', xbox: 'Right stick', playstation: 'Right stick', switch: 'Right stick' });
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      cell(tr, r.control);
+      cell(tr, r.xbox);
+      cell(tr, r.playstation);
+      cell(tr, r.switch);
+      input.padLayoutRows.append(tr);
+    }
+  }
+
+  function padSummary(pad) {
+    const parts = (pad.buttons || [])
+      .filter((b) => b.input && !/^D-pad/.test(b.control))
+      .map((b) => b.control + '=' + b.input);
+    return parts.join(', ');
+  }
+
+  function renderPads() {
+    const raw = browserPads();
+    const desc = currentDesc();
+    input.padList.textContent = '';
+    const add = (text, cls, id) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      if (cls) li.className = cls;
+      if (id) li.id = id;
+      input.padList.append(li);
+    };
+    const assigned = desc && desc.ports ? desc.ports.filter((p) => p.pad) : [];
+    if (assigned.length) {
+      for (const p of assigned) {
+        const family = FAMILY_NAMES[p.pad.family] || p.pad.family;
+        add('Player ' + p.port + ': ' + (p.pad.name || 'Gamepad') + ' — ' + family + ' layout (' + padSummary(p.pad) + ')' +
+          (p.port === 1 && p.keyboard ? ', together with the keyboard' : ''), 'pad', null);
+      }
+    } else if (raw.length) {
+      raw.forEach((pad, i) => add(pad.id + ' — will be player ' + Math.min(i + 1, 4), 'pad', null));
+    }
+    for (const pad of raw) {
+      if (pad.mapping !== 'standard') {
+        add(pad.id + ': this browser has no standard mapping for it, so buttons may be mixed up. Remap them with F10.', 'hint', null);
+      }
+    }
+    const count = raw.length;
+    add(count ? count + ' gamepad' + (count > 1 ? 's' : '') + ' detected by the browser.' : 'No gamepad detected.', 'hint', 'gamepad-status');
+    el.gamepadStatus = $('gamepad-status');
+  }
+
+  function renderControls() {
+    renderKeyboard();
+    renderPads();
+  }
+
+  // ---- debug view ----
+  const MOTOR_NAMES = ['stop', 'rumble', 'stop (hard)'];
+  const fmtAxis = (v) => (v >= 0 ? '+' : '') + v.toFixed(2);
+  const pad3 = (v) => String(v).padStart(4, ' ');
+
+  function rawText() {
+    const pads = browserPads();
+    if (!pads.length) return 'No gamepad. Press a button on the pad.';
+    return pads.map((p) => {
+      const pressed = (p.buttons || []).map((b, i) => {
+        const value = typeof b === 'object' ? b.value : b;
+        const down = typeof b === 'object' ? b.pressed : b > 0.5;
+        return down || value > 0.05 ? i + (value > 0 && value < 1 ? '=' + value.toFixed(2) : '') : null;
+      }).filter((x) => x !== null);
+      return '#' + p.index + ' ' + p.id + '\n' +
+        '  mapping: ' + (p.mapping || '(none)') + (p.vibrationActuator ? '  vibration: yes' : '') + '\n' +
+        '  axes:    ' + Array.from(p.axes || []).map(fmtAxis).join(' ') + '\n' +
+        '  pressed: ' + (pressed.length ? pressed.join(' ') : '-');
+    }).join('\n');
+  }
+
+  function gameText() {
+    const api = gameInput();
+    const ports = api && api.ports();
+    if (!ports) return 'The game has not read input yet.';
+    return 'PADRead calls: ' + api.reads() + '\n' + ports.map((p) => {
+      const sources = [p.keyboard ? 'keyboard' : null, p.controller ? 'gamepad' : null].filter(Boolean).join(' + ');
+      if (!p.connected) return 'P' + p.port + '  not connected';
+      return 'P' + p.port + '  ' + (sources || '?') + (p.merged ? ' (merged)' : '') + '\n' +
+        '  buttons: ' + (p.buttons.length ? p.buttons.join(' ') : '-') + '\n' +
+        '  stick ' + pad3(p.stickX) + pad3(p.stickY) + '   C ' + pad3(p.substickX) + pad3(p.substickY) +
+        '   L ' + pad3(p.triggerL) + '  R ' + pad3(p.triggerR) +
+        (p.motor !== null ? '   motor: ' + (MOTOR_NAMES[p.motor] || p.motor) : '');
+    }).join('\n');
+  }
+
+  let debugFrame = 0;
+  function debugTick() {
+    debugFrame = 0;
+    if (input.debug.hidden) return;
+    input.debugRaw.textContent = rawText();
+    input.debugGame.textContent = gameText();
+    debugFrame = requestAnimationFrame(debugTick);
+  }
+  function setInputDebug(on) {
+    input.debug.hidden = !on;
+    input.debugToggle.checked = on;
+    storageSet(DEBUG_KEY, on ? '1' : '0');
+    if (on && !debugFrame) debugTick();
+  }
+  input.debugToggle.addEventListener('change', () => setInputDebug(input.debugToggle.checked));
+  input.debugClose.addEventListener('click', () => { setInputDebug(false); canvas.focus(); });
+
+  // The game's settings bar opens on F10; the button sends the same key to SDL's listener.
+  input.settings.addEventListener('click', function () {
+    canvas.focus();
+    for (const type of ['keydown', 'keyup']) {
+      window.dispatchEvent(new KeyboardEvent(type, { key: 'F10', code: 'F10', keyCode: 121, which: 121, bubbles: true, cancelable: true }));
+    }
+  });
+
+  window.addEventListener('gamepadconnected', renderPads);
+  window.addEventListener('gamepaddisconnected', renderPads);
+
+  /** Called once the Module object exists: the runtime reports port changes through it. */
+  function attachInputPanel(module) {
+    module.onMkwInputChanged = function (desc) {
+      inputDesc = desc;
+      renderControls();
+    };
+  }
+
+  // For tests and for people poking at the page from the console.
+  window.WiiCompiledInput = { KEYBOARD_LAYOUT, PAD_LAYOUTS, keyboardGroups, refresh: renderControls, setDebug: setInputDebug };
+
+  renderControls();
+  renderPadLayouts();
+
+  if (new URLSearchParams(location.search).get('inputdebug') === '1' || storageGet(DEBUG_KEY) === '1') {
+    setInputDebug(true);
+  }
 
   // ---------------------------------------------------------------------------------------
   // Fullscreen
@@ -691,6 +967,7 @@
     },
   };
   window.Module = Module;
+  attachInputPanel(Module);
 
   // Shown when another tab of this site owns the save store (Web Locks): this tab only reads the
   // saves. Built in script so it works with any index.html.
