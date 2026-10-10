@@ -161,7 +161,8 @@ actually took on stock Windows 11 (by an agent, not a typical user):
 4. The link failed (initial memory) and the game died at boot (NAND hard link). Both are fixed
    above.
 5. **Disc extraction was not exercised:** I passed an already-extracted tree. The disc-image path
-   needs nodtool or DolphinTool, which aren't installed by default either.
+   (the one the user wants: drop the `.rvz` in) needs nodtool or DolphinTool, which aren't
+   installed by default either, so `build.bat` must bundle nodtool.
 6. **Time and resources:** translation about 30 s; the first full compile about 20 min
    (833 Ninja steps at `-j16`); link + `wasm-opt` about 4.5 min with about 3 GB RAM for
    `wasm-opt`. Any link-flag change reconfigures and recompiles everything.
@@ -187,8 +188,12 @@ today. The ideal flow below is the target.
      the likely fix.
   5. Finish by starting the server and printing **the URL to open** (and opening it in the
      default browser).
-* Also accept an **existing WiiCompiled install** as the input (Wheel Wizard's
-  `GameAssets\DATA`), so a host who already has WiiCompiled needs no disc image.
+* **The disc image is the input.** Dropping the operator's own `.rvz` (or `.iso`, `.wbfs`, ...)
+  into `web\game\` must be enough: `build.bat` extracts it with its own bundled, pinned nodtool
+  (no DolphinTool or other emulator required). Don't add a "point at an existing WiiCompiled
+  install" mode; the user decided against it. The image path (RVZ in particular) was **not**
+  exercised in this test, because an already-extracted tree was used, so it needs real
+  verification.
 * **Cut the host's compile time** by shipping the non-game web libraries prebuilt (SDL3, aurora,
   abseil, zstd, Crypto++, pugixml, … contain no Nintendo code), the way native WiiCompiled ships
   a "native prebuilt" package. Then only the translated shards and the runtime compile locally.
