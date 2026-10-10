@@ -123,6 +123,10 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     FillTriggersHeldByButtons(statuses);
     InputBindings::Apply(statuses);
 #if defined(__EMSCRIPTEN__)
+    // [web] Phone / tablet on-screen controls join player 1 (not while the settings bar is open).
+    if (!InputBindings::InputBlocked()) {
+        WebInput::ApplyTouch(statuses, PAD_CHANMAX);
+    }
     // [web] The page's input debug view shows exactly these statuses.
     WebInput::PublishPadStatus(statuses, PAD_CHANMAX, rumbleMask);
 #endif

@@ -8,6 +8,9 @@
 //     with no setup and a gamepad on port 1 does not need a setting change;
 //   * keeps a 64-byte snapshot of the statuses the game received, which the page reads straight
 //     out of wasm memory (web/js/library_mkw_input.js) for its input debug view;
+//   * merges the page's on-screen touch controls (web/site/touch.js) into port 1: the page writes
+//     the held buttons and stick positions into a small block of wasm memory (TouchState) and
+//     ApplyTouch reads it on every PADRead;
 //   * sends the page a JSON description of the ports (keyboard keys, pad name / type / layout)
 //     whenever it changes, for the Controls panel.
 // None of it runs from a JS callback: everything is called from the guest's PADRead path or main.
@@ -20,15 +23,17 @@
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_keyboard.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
 extern "C" {
 // web/js/library_mkw_input.js
-void mkw_input_attach(void* state, uint32_t size);
+void mkw_input_attach(void* state, uint32_t size, void* touch);
 void mkw_input_describe(const char* json);
 }
 
@@ -60,13 +65,29 @@ struct State {
 };
 static_assert(sizeof(State) == 16 + 12 * PAD_CHANMAX);
 
+// Written by the page (library_mkw_input.js MkwInput.setTouch), read by ApplyTouch: keep the
+// layout in sync with it.
+struct TouchState {
+    uint32_t active;   // nonzero while the on-screen controls are shown
+    uint16_t button;   // PAD_BUTTON_* / PAD_TRIGGER_* bits held
+    int8_t stickX;     // -127..127, up positive (GameCube convention)
+    int8_t stickY;
+    int8_t substickX;
+    int8_t substickY;
+    uint8_t triggerL;  // 0..255
+    uint8_t triggerR;
+};
+static_assert(sizeof(TouchState) == 12);
+
 enum : uint8_t {
     kFlagKeyboard = 1,    // keyboard bindings active on the port
     kFlagController = 2,  // a gamepad is assigned to the port
     kFlagMerged = 4,      // keyboard and gamepad are merged (not replacing each other)
+    kFlagTouch = 8,       // the on-screen touch controls are shown and feed the port
 };
 
 State g_state{};
+TouchState g_touch{};
 bool g_initialized = false;
 std::vector<int32_t> g_lastSignature;
 
@@ -318,7 +339,7 @@ void Initialize() noexcept {
         port.err = PAD_ERR_NO_CONTROLLER;
         port.motor = 0xFF;
     }
-    mkw_input_attach(&g_state, sizeof(g_state));
+    mkw_input_attach(&g_state, sizeof(g_state), &g_touch);
 }
 
 void PublishPadStatus(const PADStatus* statuses, uint32_t count, uint32_t rumbleMask) noexcept {
@@ -341,10 +362,39 @@ void PublishPadStatus(const PADStatus* statuses, uint32_t count, uint32_t rumble
         out.err = status.err;
         const bool keyboard = PADIsKeyboardActive(port) != FALSE;
         const bool controller = PADGetIndexForPort(port) >= 0;
+        const bool touch = port == 0 && g_touch.active != 0;
         out.flags = static_cast<uint8_t>((keyboard ? kFlagKeyboard : 0) | (controller ? kFlagController : 0) |
-                                         (keyboard && controller && merge ? kFlagMerged : 0));
+                                         (keyboard && controller && merge ? kFlagMerged : 0) |
+                                         (touch ? kFlagTouch : 0));
     }
     RefreshDescription(false);
+}
+
+void ApplyTouch(PADStatus* statuses, uint32_t count) noexcept {
+    if (!g_initialized || statuses == nullptr || count == 0 || g_touch.active == 0) {
+        return;
+    }
+    // Whichever source is pushed further wins, per axis, so a gamepad or the keyboard still
+    // works while the touch controls are shown.
+    const auto stronger = [](int8_t a, int8_t b) {
+        return static_cast<int8_t>(std::abs(int(b)) > std::abs(int(a)) ? b : a);
+    };
+    PADStatus& status = statuses[0];
+    if (status.err != PAD_ERR_NONE) {
+        // Nothing else on port 1 (keyboard turned off in F10, no gamepad): the touch controls
+        // are the controller.
+        status = PADStatus{};
+        status.err = PAD_ERR_NONE;
+    }
+    status.button |= g_touch.button;
+    status.stickX = stronger(status.stickX, g_touch.stickX);
+    status.stickY = stronger(status.stickY, g_touch.stickY);
+    status.substickX = stronger(status.substickX, g_touch.substickX);
+    status.substickY = stronger(status.substickY, g_touch.substickY);
+    status.triggerLeft = std::max(status.triggerLeft, g_touch.triggerL);
+    status.triggerRight = std::max(status.triggerRight, g_touch.triggerR);
+    if ((g_touch.button & PAD_BUTTON_A) != 0) status.analogA = 0xFF;
+    if ((g_touch.button & PAD_BUTTON_B) != 0) status.analogB = 0xFF;
 }
 
 void NoteMotor(uint32_t port, uint32_t command) noexcept {

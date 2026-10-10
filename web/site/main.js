@@ -550,7 +550,7 @@
     const ports = api && api.ports();
     if (!ports) return 'The game has not read input yet.';
     return 'PADRead calls: ' + api.reads() + '\n' + ports.map((p) => {
-      const sources = [p.keyboard ? 'keyboard' : null, p.controller ? 'gamepad' : null].filter(Boolean).join(' + ');
+      const sources = [p.keyboard ? 'keyboard' : null, p.controller ? 'gamepad' : null, p.touch ? 'touch' : null].filter(Boolean).join(' + ');
       if (!p.connected) return 'P' + p.port + '  not connected';
       return 'P' + p.port + '  ' + (sources || '?') + (p.merged ? ' (merged)' : '') + '\n' +
         '  buttons: ' + (p.buttons.length ? p.buttons.join(' ') : '-') + '\n' +
@@ -590,6 +590,7 @@
 
   /** Called once the Module object exists: the runtime reports port changes through it. */
   function attachInputPanel(module) {
+    if (window.WiiCompiledTouch) window.WiiCompiledTouch.attach(module); // touch.js: on-screen controls
     module.onMkwInputChanged = function (desc) {
       inputDesc = desc;
       renderControls();
@@ -951,6 +952,7 @@
       el.toolbar.hidden = false;
       showToolbar();
       canvas.focus();
+      if (window.WiiCompiledTouch) window.WiiCompiledTouch.gameStarted(); // touch.js
     },
     onAbort: function (what) {
       showError('Module.onAbort', 'Aborted: ' + (what == null ? '(no reason)' : formatArg(what)), new Error().stack);
@@ -1006,6 +1008,7 @@
     showLoading: function (text, fraction) { showLoader(true); el.start.hidden = true; el.startHint.hidden = true; setStatus(text || ''); setProgress(fraction); },
     hideLoading: function () { showLoader(false); },
     showError: function (message, detail) { showError('runtime', message, detail); },
+    showToolbar: function () { showToolbar(); }, // touch.js ☰
   };
 
   function loadGlue() {

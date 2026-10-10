@@ -4,7 +4,8 @@
 // Gamepads and the keyboard reach the game through SDL3's Emscripten backend (navigator.
 // getGamepads(), polled on the main loop; gamepadconnected / gamepaddisconnected for hot-plug;
 // Gamepad.vibrationActuator for rumble). This library adds no input path of its own: it only
-// lets the page see what the game receives.
+// lets the page see what the game receives, plus one way in for the page's on-screen touch
+// controls (web/site/touch.js), which the runtime merges into player 1 (WebInput::ApplyTouch).
 //
 // Module helpers installed here (all cheap, safe to call every animation frame):
 //   Module.mkwInput.ports()       -> null before the game's first PADRead, else an array of 4
@@ -15,14 +16,20 @@
 //   Module.mkwInput.reads()       -> number of guest PADRead calls so far
 //   Module.mkwInput.description() -> last port description (keyboard keys, pad name / type /
 //                                    layout per port), see web_input.cpp Describe()
+//   Module.mkwInput.setTouch(t)   -> the touch controls' state, read on the game's next PADRead:
+//                                    {active, button (PAD_* bits), stickX, stickY, substickX,
+//                                     substickY (-127..127, up positive), triggerL, triggerR (0..255)}
+//                                    false before the runtime attached (nothing is written)
 // Module callbacks (optional, called asynchronously, never from inside wasm):
 //   Module.onMkwInputChanged(description)  ports or bindings changed
+//   Module.onMkwInputReady()               the runtime attached; setTouch works from now on
 
 addToLibrary({
   $MkwInput__postset: 'MkwInput.install();',
   $MkwInput: {
     state: 0,
     size: 0,
+    touch: 0,
     desc: null,
 
     // GameCube PADStatus.button bits, in the order the debug view prints them.
@@ -38,7 +45,25 @@ addToLibrary({
         'reads': () => MkwInput.state ? HEAPU32[(MkwInput.state + 4) >> 2] : 0,
         'description': () => MkwInput.desc,
         'buttonNames': (bits) => MkwInput.buttonNames(bits),
+        'setTouch': (t) => MkwInput.setTouch(t),
       };
+    },
+
+    // Layout: web_input.cpp TouchState (12 bytes).
+    setTouch(t) {
+      const p = MkwInput.touch;
+      if (!p || !t) return false;
+      const axis = (v) => Math.max(-127, Math.min(127, Math.round(v || 0)));
+      const trigger = (v) => Math.max(0, Math.min(255, Math.round(v || 0)));
+      HEAPU32[p >> 2] = t['active'] ? 1 : 0;
+      HEAPU16[(p + 4) >> 1] = (t['button'] || 0) & 0xFFFF;
+      HEAP8[p + 6] = axis(t['stickX']);
+      HEAP8[p + 7] = axis(t['stickY']);
+      HEAP8[p + 8] = axis(t['substickX']);
+      HEAP8[p + 9] = axis(t['substickY']);
+      HEAPU8[p + 10] = trigger(t['triggerL']);
+      HEAPU8[p + 11] = trigger(t['triggerR']);
+      return true;
     },
 
     buttonNames(bits) {
@@ -71,6 +96,7 @@ addToLibrary({
           'keyboard': (flags & 1) != 0,
           'controller': (flags & 2) != 0,
           'merged': (flags & 4) != 0,
+          'touch': (flags & 8) != 0,
         });
       }
       return out;
@@ -79,9 +105,12 @@ addToLibrary({
 
   // Called once from WebInput::Initialize (main, before the game starts).
   mkw_input_attach__deps: ['$MkwInput'],
-  mkw_input_attach: (state, size) => {
+  mkw_input_attach: (state, size, touch) => {
     MkwInput.state = state;
     MkwInput.size = size;
+    MkwInput.touch = touch;
+    const ready = Module['onMkwInputReady'];
+    if (typeof ready == 'function') setTimeout(() => ready(), 0);
   },
 
   // Called from the guest's PADRead path when the description changed: parse and hand it to the
