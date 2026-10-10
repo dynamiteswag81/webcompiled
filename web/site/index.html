@@ -29,6 +29,12 @@
 
       <div id="compat-error" class="notice notice-error" role="alert" hidden></div>
 
+      <!-- Shown only when products.json lists more than one product (base game, Retro Rewind, ...) -->
+      <div id="product-area" hidden>
+        <h2 id="product-heading" class="product-heading">Choose what to play</h2>
+        <div id="product-list" class="products" role="group" aria-labelledby="product-heading"></div>
+      </div>
+
       <div id="progress-area">
         <div id="progress" class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Loading progress">
           <div id="progress-fill" class="bar-fill"></div>
@@ -38,6 +44,7 @@
 
       <button type="button" id="btn-start" class="primary" hidden>Click to start</button>
       <p id="start-hint" class="hint" hidden>Audio and input begin after this click (browser autoplay policy).</p>
+      <button type="button" id="btn-change-product" class="linklike" hidden>Choose a different game</button>
     </div>
   </section>
 

@@ -2,14 +2,20 @@
 // only; it is never part of web/site or web/dist. It mimics the parts of the classic (non-modularized)
 // glue that the frontend relies on: it reads the global `Module` object, uses Module.wasmBinary,
 // reports progress through Module.setStatus / monitorRunDependencies, draws to Module.canvas and calls
-// Module.onRuntimeInitialized. The behaviour is selected with ?stub=ok|abort|throw|reject|slow.
+// Module.onRuntimeInitialized. The page's product selection is recorded in window.__stubProduct.
+// The behaviour is selected with ?stub=ok|abort|throw|reject|slow.
 (function () {
   var Module = window.Module;
   var mode = new URLSearchParams(location.search).get('stub') || 'ok';
   var canvas = Module.canvas;
   var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 
-  console.log('stub glue loaded, mode=' + mode);
+  // Which glue this is (the test copies this file to RetroRewind.js with __stubGlueName preset) and
+  // the product the page selected, so tests can assert on both.
+  window.__stubGlue = window.__stubGlueName || 'WiiCompiled.js';
+  window.__stubProduct = JSON.stringify(Module.mkwProduct === undefined ? null : Module.mkwProduct);
+
+  console.log('stub glue loaded, mode=' + mode + ', glue=' + window.__stubGlue);
   console.warn('stub warning line');
 
   function draw() {
@@ -24,7 +30,7 @@
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#fff';
     ctx.font = Math.round(24 * dpr) + 'px sans-serif';
-    ctx.fillText('stub game canvas (' + mode + ')', 24 * dpr, 48 * dpr);
+    ctx.fillText('stub game canvas (' + mode + ', ' + window.__stubGlue + ')', 24 * dpr, 48 * dpr);
   }
 
   (async function () {

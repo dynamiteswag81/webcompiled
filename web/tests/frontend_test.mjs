@@ -28,6 +28,10 @@ fs.mkdirSync(shotsDir, { recursive: true });
 const siteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wc-site-'));
 fs.cpSync(path.join(webDir, 'site'), siteDir, { recursive: true });
 fs.copyFileSync(path.join(here, 'fixtures', 'WiiCompiled.js'), path.join(siteDir, 'WiiCompiled.js'));
+// Second product (Retro Rewind): the same stub under another name. products.json is NOT in the site
+// dir (the default scenarios run without it); the product scenarios inject it with page.route().
+fs.writeFileSync(path.join(siteDir, 'RetroRewind.js'),
+  "window.__stubGlueName = 'RetroRewind.js';\n" + fs.readFileSync(path.join(here, 'fixtures', 'WiiCompiled.js'), 'utf8'));
 { // minimal valid wasm module padded with a ~3 MiB custom section so download progress is visible
   const name = Buffer.from('pad');
   const payload = Buffer.alloc(3 * 1024 * 1024, 0x2a);
@@ -37,6 +41,7 @@ fs.copyFileSync(path.join(here, 'fixtures', 'WiiCompiled.js'), path.join(siteDir
   fs.writeFileSync(path.join(siteDir, 'WiiCompiled.wasm'), Buffer.concat([
     Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x00]), Buffer.from(leb),
     Buffer.from([name.length]), name, payload]));
+  fs.copyFileSync(path.join(siteDir, 'WiiCompiled.wasm'), path.join(siteDir, 'RetroRewind.wasm'));
 }
 
 // ---- server ---------------------------------------------------------------------------------
@@ -242,6 +247,131 @@ try {
     await page.evaluate(() => window.WiiCompiledUI.showError('manual', 'x'.repeat(300)));
     check(await noHScroll(page), 'phone: no horizontal scroll (error)');
     await shot(page, '10-phone-error');
+    await page.context().close();
+  }
+
+  // 6. Product selection (products.json) ---------------------------------------------------------
+  const fixture = (name) => fs.readFileSync(path.join(here, 'fixtures', name), 'utf8');
+  const withProducts = async (page, body) => {
+    await page.route('**/products.json', (route) => body === null
+      ? route.fulfill({ status: 404, body: 'nope' })
+      : route.fulfill({ status: 200, contentType: 'application/json', body }));
+  };
+  const requested = (page) => {
+    const urls = [];
+    page.on('request', (r) => urls.push(new URL(r.url()).pathname.replace(/^\//, '')));
+    return urls;
+  };
+  const productSeen = (page) => page.evaluate(() => JSON.parse(window.__stubProduct));
+  const startAndRun = async (page) => {
+    await waitPhase(page, 'ready');
+    await page.click('#btn-start');
+    await waitPhase(page, 'running');
+  };
+  {
+    // 6a. two products: choice screen, nothing downloaded until a choice is made
+    const page = await newPage();
+    await withProducts(page, fixture('products.two.json'));
+    const urls = requested(page);
+    await page.goto(base);
+    await waitPhase(page, 'choosing');
+    const labels = await page.$$eval('#product-list .product', (b) => b.map((x) => x.textContent));
+    check(labels.length === 2 && labels[0].startsWith('Mario Kart Wii') && labels[1].startsWith('Retro Rewind'), `two products: choice shows both (${JSON.stringify(labels)})`);
+    check(!(await page.isVisible('#btn-start')) && !(await page.isVisible('#progress')), 'two products: no start button or progress before a choice');
+    check(!urls.some((u) => u.endsWith('.wasm')), 'two products: no wasm downloaded before a choice');
+    await shot(page, '11-product-choice');
+    await page.click('#product-list .product[data-product="RetroRewind"]');
+    await startAndRun(page);
+    check(urls.includes('RetroRewind.wasm') && !urls.includes('WiiCompiled.wasm'), 'Retro Rewind choice downloads RetroRewind.wasm only');
+    check(urls.includes('RetroRewind.js') && !urls.includes('WiiCompiled.js'), 'Retro Rewind choice loads RetroRewind.js only');
+    check(await page.evaluate(() => window.__stubGlue) === 'RetroRewind.js', 'the Retro Rewind glue ran');
+    const prod = await productSeen(page);
+    check(prod && prod.id === 'RetroRewind' && prod.modRoot === 'mods/RetroRewind6', `Module.mkwProduct = ${JSON.stringify(prod)} when the glue starts`);
+    check(await page.evaluate(() => Module.mkwProduct.modManifest) === 'mods/RetroRewind6-manifest.json', 'Module.mkwProduct.modManifest names the mod manifest');
+    check(await page.evaluate(() => localStorage.getItem('wiicompiled.product')) === 'RetroRewind', 'choice is remembered in localStorage');
+    await page.context().close();
+  }
+  {
+    // 6b. a remembered choice is highlighted and focused; "Choose a different game" returns to the list
+    const page = await newPage();
+    await page.addInitScript(() => { try { if (!localStorage.getItem('seeded')) { localStorage.setItem('seeded', '1'); localStorage.setItem('wiicompiled.product', 'RetroRewind'); } } catch (_) {} });
+    await withProducts(page, fixture('products.two.json'));
+    await page.goto(base);
+    await waitPhase(page, 'choosing');
+    check(await page.evaluate(() => document.activeElement && document.activeElement.dataset.product) === 'RetroRewind', 'remembered product is focused');
+    check(await page.evaluate(() => document.querySelector('.product.last').dataset.product) === 'RetroRewind', 'remembered product is highlighted');
+    await page.click('#product-list .product[data-product="WiiCompiled"]');
+    await waitPhase(page, 'ready');
+    const prodBase = await (async () => { await page.click('#btn-start'); await waitPhase(page, 'running'); return productSeen(page); })();
+    check(prodBase.id === 'WiiCompiled' && prodBase.modRoot === null, `base choice: Module.mkwProduct = ${JSON.stringify(prodBase)}`);
+    check(await page.evaluate(() => window.__stubGlue) === 'WiiCompiled.js', 'the base glue ran for the base choice');
+    await page.context().close();
+
+    const page2 = await newPage();
+    await withProducts(page2, fixture('products.two.json'));
+    await page2.goto(base + '?product=RetroRewind&stub=ok');
+    await waitPhase(page2, 'ready');
+    check(await page2.isVisible('#btn-change-product'), 'deep link: "Choose a different game" is offered');
+    await page2.click('#btn-change-product');
+    await waitPhase(page2, 'choosing');
+    check(!page2.url().includes('product='), 'changing game drops ?product= from the URL');
+    await page2.context().close();
+  }
+  {
+    // 6c. deep link skips the choice (case-insensitive); unknown ids fall back to the choice
+    const page = await newPage();
+    await withProducts(page, fixture('products.two.json'));
+    const urls = requested(page);
+    await page.goto(base + '?product=retrorewind');
+    await startAndRun(page);
+    const prod = await productSeen(page);
+    check(prod.id === 'RetroRewind' && !urls.includes('WiiCompiled.wasm'), '?product=RetroRewind skips the choice screen');
+    await page.context().close();
+
+    const page2 = await newPage();
+    await withProducts(page2, fixture('products.two.json'));
+    await page2.goto(base + '?product=Nope');
+    await waitPhase(page2, 'choosing');
+    check(true, '?product=<unknown> falls back to the choice screen');
+    await page2.context().close();
+  }
+  {
+    // 6d. one product, a 404, malformed JSON and unsafe entries all behave like the single-product site
+    for (const [label, body] of [['one product', fixture('products.one.json')], ['no products.json', null], ['malformed json', '{nope'],
+      ['unsafe entries', '[{"id":"x","glue":"../evil.js"},{"id":"y","glue":"/abs.js"},{"id":"z","glue":"a.txt"}]']]) {
+      const page = await newPage();
+      await withProducts(page, body);
+      const urls = requested(page);
+      await page.goto(base);
+      await waitPhase(page, 'ready');
+      check(!(await page.isVisible('#product-area')) && !(await page.isVisible('#btn-change-product')), `${label}: no choice screen`);
+      await page.click('#btn-start');
+      await waitPhase(page, 'running');
+      const prod = await productSeen(page);
+      check(urls.includes('WiiCompiled.wasm') && prod && prod.id === 'WiiCompiled' && prod.modRoot === null, `${label}: plain base game starts (${JSON.stringify(prod)})`);
+      await page.context().close();
+    }
+  }
+  {
+    // 6e. blocked localStorage must not break the page; phone width has no horizontal scroll
+    const page = await newPage({
+      viewport: { width: 360, height: 640 },
+      init: () => {
+        const boom = () => { throw new DOMException('blocked', 'SecurityError'); };
+        Storage.prototype.getItem = boom; Storage.prototype.setItem = boom;
+      },
+    });
+    await withProducts(page, fixture('products.two.json'));
+    await page.goto(base);
+    await waitPhase(page, 'choosing');
+    check(await noHScroll(page), 'phone: no horizontal scroll (product choice)');
+    check(await page.evaluate(() => [...document.querySelectorAll('.product')].every((b) => {
+      const r = b.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height >= 44;
+    })), 'phone: product buttons fit the width and are tap-sized');
+    await shot(page, '12-phone-product-choice');
+    await page.click('#product-list .product[data-product="RetroRewind"]');
+    await startAndRun(page);
+    check((await productSeen(page)).id === 'RetroRewind', 'selection works with localStorage blocked');
     await page.context().close();
   }
 } catch (e) {

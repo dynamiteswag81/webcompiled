@@ -4,10 +4,12 @@
 //
 // Startup sequence
 //   1. check WebGPU + JSPI support (clear message naming Chrome/Edge 137+ when missing)
-//   2. fetch the .wasm ourselves so we can show real download progress; it is handed to the
+//   2. read products.json (optional); with several products ask which one to play (or honour
+//      ?product=ID); the choice sets Module.mkwProduct and which glue/.wasm pair is used
+//   3. fetch the .wasm ourselves so we can show real download progress; it is handed to the
 //      Emscripten glue through Module.wasmBinary, so it is not downloaded twice
-//   3. show "Click to start" (a user gesture is required for audio to be allowed to start)
-//   4. on click, load the glue script; Module.setStatus / monitorRunDependencies keep the
+//   4. show "Click to start" (a user gesture is required for audio to be allowed to start)
+//   5. on click, load the glue script; Module.setStatus / monitorRunDependencies keep the
 //      loading screen updated until the runtime is initialized
 (function () {
   'use strict';
@@ -15,10 +17,21 @@
   // ---------------------------------------------------------------------------------------
   // Configuration (adjust here if the CMake target is renamed)
   // ---------------------------------------------------------------------------------------
-  /** Emscripten glue script emitted by the build, relative to this page. */
-  const GLUE_SCRIPT = 'WiiCompiled.js';
-  /** The wasm module that goes with it. Derived from GLUE_SCRIPT by default. */
-  const WASM_FILE = GLUE_SCRIPT.replace(/\.js$/i, '') + '.wasm';
+  /** Emscripten glue script of the default product, relative to this page. */
+  const DEFAULT_GLUE_SCRIPT = 'WiiCompiled.js';
+  /**
+   * Optional product list written by web/build.sh / host.sh next to index.html:
+   *   [{"id":"WiiCompiled","title":"Mario Kart Wii","glue":"WiiCompiled.js"},
+   *    {"id":"RetroRewind","title":"Retro Rewind","glue":"RetroRewind.js","modRoot":"mods/RetroRewind6"}]
+   * With more than one entry the start screen asks which to play; with one entry or no file the
+   * page behaves as a single-product site.
+   */
+  const PRODUCTS_FILE = 'products.json';
+  const LAST_PRODUCT_KEY = 'wiicompiled.product';
+  /** The glue script and its wasm module (<glue minus .js>.wasm) of the chosen product. */
+  let glueScript = DEFAULT_GLUE_SCRIPT;
+  let wasmFile = wasmNameFor(glueScript);
+  function wasmNameFor(glue) { return glue.replace(/\.js$/i, '') + '.wasm'; }
   /**
    * Set to the exported factory name (e.g. 'createWiiCompiled') if the build uses
    * -sMODULARIZE -sEXPORT_NAME=...; leave null for the classic build where the glue
@@ -77,6 +90,9 @@
     status: $('status'),
     start: $('btn-start'),
     startHint: $('start-hint'),
+    productArea: $('product-area'),
+    productList: $('product-list'),
+    changeProduct: $('btn-change-product'),
     toolbar: $('toolbar'),
     help: $('help'),
     helpOpen: $('btn-help'),
@@ -379,13 +395,122 @@
   }
 
   // ---------------------------------------------------------------------------------------
+  // Products (base game, Retro Rewind, ...)
+  // ---------------------------------------------------------------------------------------
+  const SAFE_PATH = /^(?![\/.])(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9_.\-\/]+$/;
+
+  function storageGet(key) {
+    try { return window.localStorage.getItem(key); } catch (_) { return null; }
+  }
+  function storageSet(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (_) { /* private window, blocked storage */ }
+  }
+
+  /** Validate one products.json entry; returns a normalized product or null. */
+  function normalizeProduct(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = typeof raw.id === 'string' ? raw.id : '';
+    const glue = typeof raw.glue === 'string' ? raw.glue : '';
+    if (!id || !/\.js$/i.test(glue) || !SAFE_PATH.test(glue)) return null;
+    let modRoot = null;
+    if (typeof raw.modRoot === 'string' && raw.modRoot) {
+      const trimmed = raw.modRoot.replace(/\/+$/, '');
+      if (!SAFE_PATH.test(trimmed)) return null;
+      modRoot = trimmed;
+    }
+    return {
+      id: id,
+      title: typeof raw.title === 'string' && raw.title ? raw.title : id,
+      glue: glue,
+      modRoot: modRoot,
+      // Same naming build.sh uses for the disc: <modRoot>-manifest.json next to the mod tree.
+      modManifest: modRoot ? modRoot + '-manifest.json' : null,
+    };
+  }
+
+  /** products.json -> array of products; falls back to the single default product. */
+  async function loadProducts() {
+    const fallback = [{ id: 'WiiCompiled', title: 'Mario Kart Wii', glue: DEFAULT_GLUE_SCRIPT, modRoot: null, modManifest: null }];
+    try {
+      const resp = await fetch(PRODUCTS_FILE, { cache: 'no-cache' });
+      if (!resp.ok) return fallback;
+      const list = await resp.json();
+      const products = (Array.isArray(list) ? list : []).map(normalizeProduct).filter(Boolean);
+      const seen = new Set();
+      const unique = products.filter((p) => !seen.has(p.id) && seen.add(p.id));
+      return unique.length ? unique : fallback;
+    } catch (e) {
+      console.warn('ignoring ' + PRODUCTS_FILE + ': ' + (e && e.message || e));
+      return fallback;
+    }
+  }
+
+  function applyProduct(product) {
+    glueScript = product.glue;
+    wasmFile = wasmNameFor(glueScript);
+    // Read by the runtime (web/js libraries) to find the mod tree to overlay on the disc.
+    Module.mkwProduct = { id: product.id, modRoot: product.modRoot, modManifest: product.modManifest };
+    document.documentElement.dataset.product = product.id;
+  }
+
+  /** Resolves with the product to run: ?product=ID, else a click on the choice screen. */
+  function chooseProduct(products) {
+    if (products.length === 1) return Promise.resolve(products[0]);
+    const wanted = new URLSearchParams(location.search).get('product');
+    if (wanted) {
+      const hit = products.find((p) => p.id.toLowerCase() === wanted.toLowerCase());
+      if (hit) return Promise.resolve(hit);
+      console.warn('unknown ?product=' + wanted + '; showing the product list');
+    }
+    const last = storageGet(LAST_PRODUCT_KEY);
+    return new Promise(function (resolve) {
+      setPhase('choosing');
+      el.progressArea.hidden = true;
+      el.productList.textContent = '';
+      let preferred = null;
+      for (const product of products) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'product';
+        b.dataset.product = product.id;
+        const name = document.createElement('span');
+        name.className = 'product-title';
+        name.textContent = product.title;
+        b.append(name);
+        if (product.modRoot) {
+          const tag = document.createElement('span');
+          tag.className = 'product-tag';
+          tag.textContent = 'mod';
+          b.append(tag);
+        }
+        if (product.id === last) { b.classList.add('last'); preferred = b; }
+        b.addEventListener('click', function () {
+          storageSet(LAST_PRODUCT_KEY, product.id);
+          el.productArea.hidden = true;
+          el.progressArea.hidden = false;
+          resolve(product);
+        });
+        el.productList.append(b);
+      }
+      el.productArea.hidden = false;
+      (preferred || el.productList.firstElementChild).focus();
+    });
+  }
+
+  el.changeProduct.addEventListener('click', function () {
+    const url = new URL(location.href);
+    url.searchParams.delete('product');
+    location.href = url.pathname + (url.search || '');
+  });
+
+  // ---------------------------------------------------------------------------------------
   // Loading
   // ---------------------------------------------------------------------------------------
   async function fetchWasm() {
-    setStatus('Downloading ' + WASM_FILE + '…');
+    setStatus('Downloading ' + wasmFile + '…');
     setProgress(0);
-    const resp = await fetch(WASM_FILE, { cache: 'no-cache' });
-    if (!resp.ok) throw new Error('Could not download ' + WASM_FILE + ' (HTTP ' + resp.status + ' ' + resp.statusText + ')');
+    const resp = await fetch(wasmFile, { cache: 'no-cache' });
+    if (!resp.ok) throw new Error('Could not download ' + wasmFile + ' (HTTP ' + resp.status + ' ' + resp.statusText + ')');
     const total = parseInt(resp.headers.get('Content-Length') || '0', 10) || 0;
     if (!resp.body || !resp.body.getReader) {
       setProgress(null);
@@ -401,10 +526,10 @@
       received += value.length;
       if (total) {
         setProgress(received / total);
-        setStatus('Downloading ' + WASM_FILE + ': ' + mib(received) + ' / ' + mib(total));
+        setStatus('Downloading ' + wasmFile + ': ' + mib(received) + ' / ' + mib(total));
       } else {
         setProgress(null);
-        setStatus('Downloading ' + WASM_FILE + ': ' + mib(received));
+        setStatus('Downloading ' + wasmFile + ': ' + mib(received));
       }
     }
     const bytes = new Uint8Array(received);
@@ -425,7 +550,7 @@
     print: function () { console.log.apply(console, arguments); },
     printErr: function () { console.error.apply(console, arguments); },
     locateFile: function (path, prefix) {
-      if (path === WASM_FILE) return WASM_FILE;
+      if (path === wasmFile) return wasmFile;
       return (prefix || '') + path;
     },
     setStatus: function (text) {
@@ -487,16 +612,17 @@
   function loadGlue() {
     return new Promise(function (resolve, reject) {
       const s = document.createElement('script');
-      s.src = GLUE_SCRIPT;
+      s.src = glueScript;
       s.async = true;
       s.onload = resolve;
-      s.onerror = function () { reject(new Error('Could not load ' + GLUE_SCRIPT)); };
+      s.onerror = function () { reject(new Error('Could not load ' + glueScript)); };
       document.body.appendChild(s);
     });
   }
 
   async function start() {
     el.start.hidden = true;
+    el.changeProduct.hidden = true;
     el.startHint.hidden = true;
     el.progressArea.hidden = false;
     setPhase('starting');
@@ -507,7 +633,7 @@
       await loadGlue();
       if (MODULE_FACTORY) {
         const factory = window[MODULE_FACTORY];
-        if (typeof factory !== 'function') throw new Error(GLUE_SCRIPT + ' did not define ' + MODULE_FACTORY + '()');
+        if (typeof factory !== 'function') throw new Error(glueScript + ' did not define ' + MODULE_FACTORY + '()');
         await factory(Module);
       }
     } catch (e) {
@@ -526,6 +652,10 @@
       showIncompatible(problems);
       return;
     }
+    const products = await loadProducts();
+    const product = await chooseProduct(products);
+    applyProduct(product);
+    el.changeProduct.hidden = products.length < 2;
     setPhase('downloading');
     try {
       wasmBinary = await fetchWasm();

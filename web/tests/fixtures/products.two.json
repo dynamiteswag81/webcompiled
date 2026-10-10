@@ -1,0 +1,4 @@
+[
+  {"id": "WiiCompiled", "title": "Mario Kart Wii", "glue": "WiiCompiled.js"},
+  {"id": "RetroRewind", "title": "Retro Rewind", "glue": "RetroRewind.js", "modRoot": "mods/RetroRewind6"}
+]
