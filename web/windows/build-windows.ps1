@@ -297,6 +297,13 @@ function Install-DotnetWithScript {
 # Main
 # ===========================================================================
 function Invoke-Main {
+    # Launched from Git Bash/MSYS (e.g. "cmd //c build.bat"), these leak into every child: MSYSTEM
+    # makes emsdk write a POSIX PATH (/c/...:/c/...) that cmd cannot use, so emcc is "not
+    # recognized"; NoDefaultCurrentDirectoryInExePath stops cmd running tools by bare name from
+    # their own folder. A double-clicked build.bat has neither; make every launch look like that.
+    foreach ($leak in 'MSYSTEM', 'NoDefaultCurrentDirectoryInExePath') {
+        [System.Environment]::SetEnvironmentVariable($leak, $null, 'Process')
+    }
     New-Item -ItemType Directory -Force -Path $buildDirRoot | Out-Null
     Open-Log $logPath
     Write-Log ('=' * 70)

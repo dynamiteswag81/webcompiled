@@ -287,7 +287,10 @@ Write-Info "Ninja $(& ninja --version)"
 # Python 3 ------------------------------------------------------------------
 # $pythonCmd is an array: executable followed by fixed leading arguments (e.g. py -3).
 $pythonCmd = $null
-$pythonCandidates = if ($env:PYTHON) { @(, @($env:PYTHON)) } else { @(, @('python3')) + @(, @('python')) + @(, @('py', '-3')) }
+# Built in a list: an if-expression unrolls one level, so a lone @(, @(path)) would become the
+# path string itself and $cand[0] its first character ("C"), hiding a valid $env:PYTHON.
+$pythonCandidates = New-Object System.Collections.Generic.List[object]
+if ($env:PYTHON) { $pythonCandidates.Add(@($env:PYTHON)) } else { $pythonCandidates.Add(@('python3')); $pythonCandidates.Add(@('python')); $pythonCandidates.Add(@('py', '-3')) }
 foreach ($cand in $pythonCandidates) {
     if (-not (Test-Command $cand[0])) { continue }
     $leading = @($cand | Select-Object -Skip 1)
