@@ -142,6 +142,22 @@ Last updated by the cloud session. "Verified" means run here, without game data,
 unless it says "local" (verified by the local session with the real game files).
 
 ### Verified
+* **Performance pass (local, real game, Edge on an RTX 2060 SUPER):**
+  * Staging uploads: browser WebGPU maps by shadowing the whole range in the wasm heap (37 MB
+    zero-filled and copied back per frame, 15% of CPU in a race) and every frame waited for the
+    map (spikes past 400 ms). The web build records into a persistent arena and `writeBuffer`s
+    only the bytes used, then clears them (the renderer relies on zeroed staging memory: without
+    the clear an earlier frame's Mii face was drawn over every race). Races: ~50 → ~60 FPS.
+  * Menu freezes were first-use pipeline compilation on the browser GPU process's main thread
+    (68 new pipelines → 2.1 s). GX pipelines now use `createRenderPipelineAsync` with
+    skip-unready draws (worst hitch 0.27 s); things drawn into textures, such as kart previews,
+    can be black for a moment the first time a screen appears.
+  * Idle: `WebHost::SleepUntil` sleeps on timers armed from a macrotask hop (no nested-timer
+    clamp) instead of hopping through the wait: ~35× fewer event-loop hops when idle.
+* **Mobile (local): playable but buggy.** A full race on an Android phone (Chrome, LAN HTTPS)
+  with the touch controls, in slow motion, before the performance pass. Phones now render a
+  16:9 picture capped at 540 lines (`main.js` `setupRenderSize`, `?res=` / `?aspect=fill`);
+  not yet re-measured on the phone. iPhone/iPad: no JSPI in WebKit yet.
 * **Translator on the real PAL game files (local):** 29,637 functions in ~30 s;
   `emit-base-manifest`, `generate-data-init`, `emit-build-shards` succeed
   → 72 `base_common` shards + dispatch + 16 registration TUs (~427 MB C++).

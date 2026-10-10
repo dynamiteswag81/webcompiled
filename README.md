@@ -7,9 +7,10 @@ or Edge can open the URL and play: no install, no emulator, no per-player game f
 
 > [!WARNING]
 > **In development, but playable.** Built from a real PAL disc on Windows with `build.bat`, both
-> Mario Kart Wii and Retro Rewind run in Chrome/Edge with keyboard input (Retro Rewind tested to
-> its menus at 60 FPS). Expect slowdowns ("laggy") and rough edges; online play is not available.
-> The current state is tracked in [docs/web-port.md](docs/web-port.md#status).
+> Mario Kart Wii and Retro Rewind run in Chrome/Edge (about 60 FPS in races on a desktop PC).
+> **Mobile is playable but buggy:** a full race works on an Android phone with the on-screen
+> controls, but slowly, with glitches. Expect rough edges everywhere; online play is not
+> available. The current state is tracked in [docs/web-port.md](docs/web-port.md#status).
 
 > [!IMPORTANT]
 > There is no Nintendo code, no assets and no game data in this repository, and no pre-translated
@@ -47,6 +48,10 @@ same computer's `localhost`. So other devices need HTTPS.
   `web/host.sh --https --lan` on Linux and macOS). It makes a self-signed certificate; other
   devices open `https://<this PC's IP address>:8080`.
   Other devices see a certificate warning the first time; they can continue past it once.
+  To run it, open a terminal in the WebCompiled folder (in File Explorer, type `cmd` in the
+  address bar and press Enter) and type `start-server.bat --lan`. In PowerShell, type
+  `.\start-server.bat --lan` instead. Or make a shortcut to `start-server.bat` and add ` --lan` at
+  the end of its Target. If Windows Firewall asks, allow it on private networks.
 * **Over the internet:** put a server with a real certificate in front of it, such as Caddy, a
   Cloudflare Tunnel or Tailscale. The [hosting guide](docs/web-hosting.md#let-other-people-play)
   has short recipes for each.
@@ -104,8 +109,13 @@ precompiled in `web/prebuilt/`, so a host only compiles the runtime and their ow
 ## Playing
 
 - **Browser:** Chrome or Edge 137 or newer, on desktop, or Chrome on Android phones and tablets
-  that have WebGPU (not yet tested with the game). The page checks for WebGPU and JSPI and tells
-  you what is missing. Firefox and Safari will work once they ship both.
+  that have WebGPU. The page checks for WebGPU and JSPI and tells you what is missing. Firefox and
+  Safari (so every iPhone and iPad browser) will work once they ship both.
+- **Phones (playable, but buggy):** a race runs, slowly. Phones render a 16:9 picture at up to
+  540 lines, letterboxed (top-aligned in portrait, leaving room for the touch controls). Add
+  `?res=720` to the address for a sharper picture, `?res=0` for full resolution, or
+  `?aspect=fill` to use the whole screen. The first time a menu screen appears, some things
+  (such as the kart previews) can stay black for a moment while their shaders compile.
 - **Controls:** the keyboard works right away, and any gamepad the browser sees (Xbox,
   PlayStation, Switch Pro, ...) joins automatically: the first pad plays alongside the keyboard
   as player 1, more pads become players 2–4. Press a button on a pad once so the browser
