@@ -4,16 +4,20 @@
     WiiCompiled for the Web - operator pipeline (PowerShell 7, Windows / Linux / macOS).
 
 .DESCRIPTION
-    Takes the operator's own PAL (RMCP01) Mario Kart Wii disc image, extracts it, runs the same
-    translator pipeline as Launcher/local-build.sh, compiles the runtime + translated code to
-    WebAssembly with Emscripten, and writes a self-contained static site (default web/dist/).
+    Takes the operator's own PAL (RMCP01) Mario Kart Wii disc image (or an already extracted DATA
+    tree), extracts it, runs the same translator pipeline as Launcher/local-build.sh, compiles the
+    runtime + translated code to WebAssembly with Emscripten, and writes a self-contained static
+    site (default web/dist/). With -RetroRewind it also builds the Retro Rewind product.
     Any static web server with HTTP Range support can host that directory; web/serve.py is a
     small one for local testing. The repository itself never contains game data.
 
     Same behaviour and options as web/build.sh.
 
 .PARAMETER DiscImage
-    Your own PAL Mario Kart Wii (RMCP01) disc image: ISO, GCM, GCZ, CISO, WBFS, WIA or RVZ.
+    Your own PAL Mario Kart Wii (RMCP01) disc image (ISO, GCM, GCZ, CISO, WBFS, WIA or RVZ) OR an
+    already extracted DATA partition tree (a folder with sys/main.dol and files/; one extra level of
+    nesting such as DIR/DATA/sys/main.dol is accepted). A tree skips the extraction; the clean-PAL
+    hash check still runs.
 
 .PARAMETER Out
     Output site directory (default: web/dist).
@@ -30,7 +34,10 @@
     generate-data-init and emit-build-shards still run).
 
 .PARAMETER RetroRewind
-    TODO: Retro Rewind web build (not implemented yet).
+    Also build Retro Rewind: the RetroRewind6 folder (it contains Binaries/Code.pul) or a folder
+    containing RetroRewind6/. Adds the RetroRewind product, dist/mods/RetroRewind6 (+ manifest) and
+    dist/products.json lists both products. Networking is compiled out of the web build, so no
+    Retro-WFC payload is used.
 
 .NOTES
     Environment variables:
@@ -46,6 +53,7 @@
 .EXAMPLE
     pwsh web/build.ps1 D:\games\mkwii-pal.iso
     pwsh web/build.ps1 ./mkwii-pal.rvz -Out ./site -Jobs 4
+    pwsh web/build.ps1 D:\game\DATA -RetroRewind D:\game\RetroRewind6
 #>
 [CmdletBinding()]
 param(
@@ -67,12 +75,14 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------------------
 # Settings you may want to adjust (names of the CMake target and its outputs).
 # ---------------------------------------------------------------------------
-$WebTarget = 'WiiCompiled'           # CMake target that links the web product
-$WebJsName = 'WiiCompiled.js'        # Emscripten glue emitted by that target (in the build dir)
-$WebWasmName = 'WiiCompiled.wasm'    # wasm module emitted by that target (in the build dir)
-# Optional extra files the target may emit next to the .js (copied into dist/ if present).
-$WebExtraOutputs = @('WiiCompiled.data', 'WiiCompiled.wasm.map')
+# CMake targets that link web products: <Target>.js (Emscripten glue) + <Target>.wasm, plus the
+# optional extras <Target>.data / <Target>.wasm.map. RetroRewind is added with -RetroRewind.
+$BaseTarget = 'WiiCompiled'
+$RetroTarget = 'RetroRewind'
+$WebExtraSuffixes = @('.data', '.wasm.map')
 $DiscManifestName = 'disc-manifest.json'
+$ModsDirName = 'mods'
+$RetroModDirName = 'RetroRewind6'    # dist/mods/RetroRewind6 + dist/mods/RetroRewind6-manifest.json
 $EmscriptenRecommended = '6.0.12'
 $CMakeMin = [version]'3.25'
 # Pinned clean PAL RMCP01 hashes; identical to projects/mkwii/recomp.yml and
@@ -102,10 +112,11 @@ function Stop-Build([string]$Text) {
 
 function Show-Usage {
     @'
-Usage: web/build.ps1 DISC_IMAGE [options]      (pwsh web/build.ps1 ...)
+Usage: web/build.ps1 DISC_IMAGE_OR_DIR [options]      (pwsh web/build.ps1 ...)
 
-  DISC_IMAGE            Your own PAL Mario Kart Wii (RMCP01) disc image:
-                        ISO, GCM, GCZ, CISO, WBFS, WIA or RVZ.
+  DISC_IMAGE_OR_DIR     Your own PAL Mario Kart Wii (RMCP01) disc image (ISO, GCM, GCZ, CISO,
+                        WBFS, WIA or RVZ) OR an already extracted DATA partition tree (a folder
+                        holding sys/main.dol and files/; DIR/DATA/sys/main.dol also works).
 
 Options:
   -Out DIR              Output site directory (default: web/dist)
@@ -114,7 +125,8 @@ Options:
                         parallelism to N (default: derived from CPU count and RAM)
   -SkipTranslate        Reuse the existing generated/ translation (skips translate-recursive and
                         emit-base-manifest; generate-data-init and emit-build-shards still run)
-  -RetroRewind DIR      TODO: Retro Rewind web build (not implemented yet)
+  -RetroRewind DIR      Also build Retro Rewind: DIR is the RetroRewind6 folder (it contains
+                        Binaries/Code.pul) or a folder containing RetroRewind6/
   -Help                 Show this help (also: -h, --help)
   (bash-style --out/--build-dir/--jobs/--skip-translate/--retro-rewind are accepted too)
 
@@ -146,8 +158,9 @@ while ($i -lt $rest.Count) {
 
 if ($DiscImage -match '^--?(h|help|\?)$') { Show-Usage; exit 0 }
 if (-not $DiscImage) { Show-Usage; Stop-Build 'a disc image path is required' }
-if ($RetroRewind) { Stop-Build '-RetroRewind is not implemented for the web build yet (TODO)' }
-if (-not (Test-Path -LiteralPath $DiscImage -PathType Leaf)) { Stop-Build "disc image does not exist: $DiscImage" }
+if (-not (Test-Path -LiteralPath $DiscImage)) { Stop-Build "disc image or extracted tree does not exist: $DiscImage" }
+$discIsTree = Test-Path -LiteralPath $DiscImage -PathType Container
+if ($RetroRewind -and -not (Test-Path -LiteralPath $RetroRewind -PathType Container)) { Stop-Build "-RetroRewind: not a directory: $RetroRewind" }
 if ($Jobs -lt 0) { Stop-Build '-Jobs must be a positive integer' }
 
 function Get-AbsoluteDir([string]$Path) {
@@ -269,7 +282,9 @@ Write-Info "Python $(& $pythonExe @pythonLead -c 'import platform; print(platfor
 # Disc extractor ------------------------------------------------------------
 # Result: $extractCmd is an array of words with {IMAGE}/{OUT} placeholders.
 $extractCmd = @()
-if ($env:MKW_DISC_EXTRACT_CMD) {
+if ($discIsTree) {
+    Write-Info 'input is an extracted tree; no disc extractor needed'
+} elseif ($env:MKW_DISC_EXTRACT_CMD) {
     $extractCmd = @($env:MKW_DISC_EXTRACT_CMD -split '\s+' | Where-Object { $_ })
     Write-Info "disc extractor: MKW_DISC_EXTRACT_CMD ($($env:MKW_DISC_EXTRACT_CMD))"
 } else {
@@ -316,6 +331,31 @@ if (-not (Test-Path -LiteralPath $manifestTool -PathType Leaf)) {
     Stop-Build "disc manifest generator is missing: $manifestTool (expected CLI: make_disc_manifest.py <disc_root> <out.json>)"
 }
 
+# Retro Rewind input -----------------------------------------------------------
+# $retroRoot = the RetroRewind6 folder (has Binaries/Code.pul), found in DIR, DIR/RetroRewind6 or a
+# few levels below DIR (e.g. DIR/RetroRewind/RetroRewind6).
+$retroRoot = $null
+if ($RetroRewind) {
+    $rrDir = (Resolve-Path -LiteralPath $RetroRewind).Path
+    if (Test-Path -LiteralPath (Join-Path $rrDir 'Binaries/Code.pul') -PathType Leaf) {
+        $retroRoot = $rrDir
+    } elseif (Test-Path -LiteralPath (Join-Path $rrDir 'RetroRewind6/Binaries/Code.pul') -PathType Leaf) {
+        $retroRoot = Join-Path $rrDir 'RetroRewind6'
+    } else {
+        $puls = @(Get-ChildItem -LiteralPath $rrDir -Recurse -Depth 3 -File -Filter 'Code.pul' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq 'Binaries' })
+        if ($puls.Count -eq 0) {
+            Stop-Build "-RetroRewind: no Binaries/Code.pul found in $rrDir. Pass the RetroRewind6 folder (the one that contains Binaries/Code.pul) or its parent."
+        }
+        if ($puls.Count -gt 1) {
+            Stop-Build "-RetroRewind: several Code.pul files found under $rrDir; pass the RetroRewind6 folder itself:`n$(($puls | ForEach-Object { $_.FullName }) -join "`n")"
+        }
+        $retroRoot = $puls[0].Directory.Parent.FullName
+    }
+    Write-Info "Retro Rewind: $retroRoot"
+}
+$buildRetro = [bool]$retroRoot
+
 # ---------------------------------------------------------------------------
 # Parallelism (same three knobs as Launcher/local-build.sh)
 # ---------------------------------------------------------------------------
@@ -337,47 +377,63 @@ if ($Jobs -gt 0) {
 Write-Info "parallelism: translator=$translatorThreads translated-compile-pool=$translatedJobs ninja=$globalJobs"
 
 # ---------------------------------------------------------------------------
-# (a) Extract the DATA partition
+# (a) Extract the DATA partition (or use the extracted tree as given)
 # ---------------------------------------------------------------------------
-$workDisc = Join-Path $buildDir 'disc'   # normalized DATA root: sys/ and files/
-$stamp = Join-Path $buildDir 'disc.stamp'
-$imageInfo = Get-Item -LiteralPath $DiscImage
-$imageMtime = ([DateTimeOffset]$imageInfo.LastWriteTimeUtc).ToUnixTimeSeconds()
-$wantStamp = "$DiscImage|$($imageInfo.Length)-$imageMtime"
-
-function Test-DiscValid {
-    return (Test-Path -LiteralPath (Join-Path $workDisc 'sys/main.dol') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $workDisc 'files/rel/StaticR.rel') -PathType Leaf)
+function Test-DiscValid([string]$Root) {
+    return (Test-Path -LiteralPath (Join-Path $Root 'sys/main.dol') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Root 'files/rel/StaticR.rel') -PathType Leaf)
 }
 
-Write-Step 'Extracting the disc image'
-if ((Test-DiscValid) -and (Test-Path -LiteralPath $stamp -PathType Leaf) -and ((Get-Content -LiteralPath $stamp -Raw) -ceq $wantStamp)) {
-    Write-Info "reusing previous extraction in $workDisc (same image, size and mtime)"
+$stamp = $null
+$wantStamp = $null
+if ($discIsTree) {
+    Write-Step 'Locating the extracted disc tree'
+    $workDisc = $null
+    if (Test-Path -LiteralPath (Join-Path $DiscImage 'sys/main.dol') -PathType Leaf) {
+        $workDisc = $DiscImage
+    } else {
+        $foundTreeDol = Get-ChildItem -LiteralPath $DiscImage -Recurse -Depth 2 -File -Filter 'main.dol' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq 'sys' } | Select-Object -First 1
+        if ($foundTreeDol) { $workDisc = $foundTreeDol.Directory.Parent.FullName }
+    }
+    if (-not $workDisc) { Stop-Build "no sys/main.dol found in $DiscImage (or one folder below it). An extracted tree must contain sys/main.dol and files/." }
+    if (-not (Test-DiscValid $workDisc)) { Stop-Build "$workDisc has sys/main.dol but no files/rel/StaticR.rel; the tree looks incomplete (is it the DATA partition?)" }
+    Write-Info "using $workDisc (no extraction)"
 } else {
-    $tmpExtract = Join-Path $buildDir 'disc.extract.tmp'
-    Remove-Tree $tmpExtract
-    Remove-Tree $workDisc
-    if (Test-Path -LiteralPath $stamp) { Remove-Item -LiteralPath $stamp -Force }
-    New-Item -ItemType Directory -Force -Path $tmpExtract | Out-Null
-    $cmd = @($extractCmd | ForEach-Object { $_.Replace('{IMAGE}', $DiscImage).Replace('{OUT}', $tmpExtract) })
-    Write-Info "running: $($cmd -join ' ')"
-    $cmdArgs = @($cmd | Select-Object -Skip 1)
-    & $cmd[0] @cmdArgs
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Build 'disc extraction failed. Check the image is a valid RMCP01 disc and supported by your extractor (set MKW_DISC_EXTRACT_CMD to use a different command).'
-    }
+    $workDisc = Join-Path $buildDir 'disc'   # normalized DATA root: sys/ and files/
+    $stamp = Join-Path $buildDir 'disc.stamp'
+    $imageInfo = Get-Item -LiteralPath $DiscImage
+    $imageMtime = ([DateTimeOffset]$imageInfo.LastWriteTimeUtc).ToUnixTimeSeconds()
+    $wantStamp = "$DiscImage|$($imageInfo.Length)-$imageMtime"
 
-    # Different tools nest the DATA partition differently (out/, out/DATA/, ...): locate sys/main.dol.
-    $tmpPrefixLen = $tmpExtract.TrimEnd('\', '/').Length
-    $foundDol = Get-ChildItem -LiteralPath $tmpExtract -Recurse -Depth 4 -File -Filter 'main.dol' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Directory.Name -eq 'sys' } | Select-Object -First 1
-    if (-not $foundDol) { Stop-Build "extraction did not produce sys/main.dol under $tmpExtract (is this a Wii disc with a DATA partition?)" }
-    $dataRoot = $foundDol.Directory.Parent.FullName
-    if (-not (Test-Path -LiteralPath (Join-Path $dataRoot 'files/rel/StaticR.rel') -PathType Leaf)) {
-        Stop-Build "extraction did not produce files/rel/StaticR.rel under $dataRoot"
+    Write-Step 'Extracting the disc image'
+    if ((Test-DiscValid $workDisc) -and (Test-Path -LiteralPath $stamp -PathType Leaf) -and ((Get-Content -LiteralPath $stamp -Raw) -ceq $wantStamp)) {
+        Write-Info "reusing previous extraction in $workDisc (same image, size and mtime)"
+    } else {
+        $tmpExtract = Join-Path $buildDir 'disc.extract.tmp'
+        Remove-Tree $tmpExtract
+        Remove-Tree $workDisc
+        if (Test-Path -LiteralPath $stamp) { Remove-Item -LiteralPath $stamp -Force }
+        New-Item -ItemType Directory -Force -Path $tmpExtract | Out-Null
+        $cmd = @($extractCmd | ForEach-Object { $_.Replace('{IMAGE}', $DiscImage).Replace('{OUT}', $tmpExtract) })
+        Write-Info "running: $($cmd -join ' ')"
+        $cmdArgs = @($cmd | Select-Object -Skip 1)
+        & $cmd[0] @cmdArgs
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Build 'disc extraction failed. Check the image is a valid RMCP01 disc and supported by your extractor (set MKW_DISC_EXTRACT_CMD to use a different command).'
+        }
+
+        # Different tools nest the DATA partition differently (out/, out/DATA/, ...): locate sys/main.dol.
+        $foundDol = Get-ChildItem -LiteralPath $tmpExtract -Recurse -Depth 4 -File -Filter 'main.dol' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq 'sys' } | Select-Object -First 1
+        if (-not $foundDol) { Stop-Build "extraction did not produce sys/main.dol under $tmpExtract (is this a Wii disc with a DATA partition?)" }
+        $dataRoot = $foundDol.Directory.Parent.FullName
+        if (-not (Test-Path -LiteralPath (Join-Path $dataRoot 'files/rel/StaticR.rel') -PathType Leaf)) {
+            Stop-Build "extraction did not produce files/rel/StaticR.rel under $dataRoot"
+        }
+        Move-Item -LiteralPath $dataRoot -Destination $workDisc
+        Remove-Tree $tmpExtract
     }
-    Move-Item -LiteralPath $dataRoot -Destination $workDisc
-    Remove-Tree $tmpExtract
 }
 
 # ---------------------------------------------------------------------------
@@ -387,14 +443,14 @@ Write-Step 'Verifying the disc is a clean PAL RMCP01 image'
 $dolSha = Get-Sha256 (Join-Path $workDisc 'sys/main.dol')
 $relSha = Get-Sha256 (Join-Path $workDisc 'files/rel/StaticR.rel')
 if ($dolSha -ne $ExpectedDolSha256) {
-    Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue
+    if ($stamp) { Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue }
     Stop-Build "main.dol sha256 mismatch: expected $ExpectedDolSha256, got $dolSha. Only an unmodified PAL (RMCP01) Mario Kart Wii disc is supported."
 }
 if ($relSha -ne $ExpectedRelSha256) {
-    Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue
+    if ($stamp) { Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue }
     Stop-Build "StaticR.rel sha256 mismatch: expected $ExpectedRelSha256, got $relSha. Use a clean PAL (RMCP01) image."
 }
-[System.IO.File]::WriteAllText($stamp, $wantStamp)
+if ($stamp) { [System.IO.File]::WriteAllText($stamp, $wantStamp) }
 Write-Info 'main.dol and StaticR.rel match'
 
 # ---------------------------------------------------------------------------
@@ -432,6 +488,22 @@ foreach ($line in Get-Content -LiteralPath $project) {
 if (-not $entryPoint) { Stop-Build "could not find a translation entry point in $project" }
 
 $translationFingerprint = Get-ConcatSha256 @((Join-Path $assets 'main.dol'), (Join-Path $assets 'StaticR.rel'), $project)
+
+if ($buildRetro) {
+    # Same as Launcher/local-build.sh: the translator finds the mod through the project file's
+    # workspace-relative profile paths, and both the base and the mod leg block leaf inlining at
+    # every address the profile patches, so the selected Code.pul must sit at the profile's
+    # mod_root before either leg runs.
+    $sourcePul = Join-Path $retroRoot 'Binaries/Code.pul'
+    $stagedBinaries = Join-Path $workspace 'PulsarPacks/completed/RetroRewind/RetroRewind6/Binaries'
+    New-Item -ItemType Directory -Force -Path $stagedBinaries | Out-Null
+    $stagedPul = Join-Path $stagedBinaries 'Code.pul'
+    if ([System.IO.Path]::GetFullPath($sourcePul) -ne [System.IO.Path]::GetFullPath($stagedPul)) {
+        Write-Step "Staging Retro Rewind's Code.pul into PulsarPacks/ (ignored by version control)"
+        Copy-Item -LiteralPath $sourcePul -Destination $stagedPul -Force
+    }
+}
+
 $reuseBase = $false
 if ($SkipTranslate) {
     if (-not ((Test-Path -LiteralPath $baseMetadata -PathType Leaf) -and (Test-Path -LiteralPath $baseManifest -PathType Leaf) -and (Test-Path -LiteralPath $functions -PathType Container))) {
@@ -443,6 +515,22 @@ if ($SkipTranslate) {
     $recorded = if ($m.Success) { $m.Groups[1].Value } else { '' }
     if ($recorded -eq $translationFingerprint -and (Test-Path -LiteralPath $baseMetadata -PathType Leaf) -and (Test-Path -LiteralPath $baseManifest -PathType Leaf)) {
         $reuseBase = $true
+    }
+}
+
+if ($reuseBase -and $buildRetro) {
+    # A base tree that never saw this Code.pul would silently bake vanilla code into the modded
+    # product; check-base-mod-awareness fails closed (anything but exit 0 forces a retranslation).
+    $retroCodePul = Join-Path $retroRoot 'Binaries/Code.pul'
+    $pulSha = Get-Sha256 $retroCodePul
+    $knownPul = Select-String -LiteralPath $baseMetadata -SimpleMatch -Quiet -Pattern "`"codePulSha256`":`"$pulSha`""
+    if (-not $knownPul) {
+        & dotnet $translatorDll check-base-mod-awareness --project $project --profile retro-rewind `
+            --translation-output-metadata $baseMetadata --code-pul $retroCodePul
+        if ($LASTEXITCODE -ne 0) {
+            Write-Info 'the base translation is stale for this Code.pul; retranslating the base game'
+            $reuseBase = $false
+        }
     }
 }
 
@@ -465,12 +553,28 @@ if ($reuseBase) {
     [System.IO.File]::WriteAllText($translationProvenance, "{`"SchemaVersion`":1,`"TranslationFingerprint`":`"$translationFingerprint`"}")
 }
 
+$retroOut = Join-Path $workspace 'build/mods/retro_rewind_full_cpp'
+if ($buildRetro) {
+    # Mirrors Launcher/local-build.sh (--profile both). The browser build has networking compiled
+    # out, so there is never a Retro-WFC payload: --skip-retro-wfc.
+    Write-Step 'Translating the selected Retro Rewind Code.pul'
+    Invoke-Translator @('translate-mod', '--project', $project, '--profile', 'retro-rewind',
+        '--base-manifest', $baseManifest, '--base-translation-output-metadata', $baseMetadata,
+        '--code-pul', (Join-Path $retroRoot 'Binaries/Code.pul'), '--mod-root', $retroRoot, '--mod-name', 'Retro Rewind',
+        '--region', 'P', '--out', $retroOut, '--prefer-cached-inputs', '--emit-cpp',
+        '--threads', "$translatorThreads", '--skip-retro-wfc')
+}
+
 Write-Step 'Generating game data initialization'
 Invoke-Translator @('generate-data-init', '--project', $project)
 
 Write-Step 'Emitting build shards'
-Invoke-Translator @('emit-build-shards', '--project', $project, '--base-metadata', $baseMetadata,
+$shardArgs = @('emit-build-shards', '--project', $project, '--base-metadata', $baseMetadata,
     '--base-functions-dir', $functions, '--native-source-dir', (Join-Path $workspace 'runtime/src'), '--out', $shards)
+if ($buildRetro) {
+    $shardArgs += @('--resolved-profile', (Join-Path $retroOut 'resolved_dispatch_profile.json'), '--retro-cpp-dir', (Join-Path $retroOut 'cpp'))
+}
+Invoke-Translator $shardArgs
 
 # ---------------------------------------------------------------------------
 # (d) Emscripten configure + build
@@ -495,8 +599,14 @@ Write-Step 'Configuring the WebAssembly build (emcmake)'
 Invoke-Native 'emcmake cmake (configure)' 'emcmake' @('cmake', '-S', (Join-Path $workspace 'runtime'), '-B', $cmakeBuild, '-G', 'Ninja',
     '-DCMAKE_BUILD_TYPE=Release', "-DMKW_PLATFORM_WEB_DIST=$outDir", "-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs")
 
-Write-Step "Compiling $WebTarget to WebAssembly (this is the long step)"
-Invoke-Native 'cmake --build' 'cmake' @('--build', $cmakeBuild, '--target', $WebTarget, '--parallel', "$globalJobs")
+$targets = @($BaseTarget)
+if ($buildRetro) { $targets += $RetroTarget }
+
+Write-Step "Compiling $($targets -join ' ') to WebAssembly (this is the long step)"
+$buildArgs = @('--build', $cmakeBuild)
+foreach ($t in $targets) { $buildArgs += @('--target', $t) }
+$buildArgs += @('--parallel', "$globalJobs")
+Invoke-Native 'cmake --build' 'cmake' $buildArgs
 
 # ---------------------------------------------------------------------------
 # (e) Assemble the static site
@@ -504,24 +614,27 @@ Invoke-Native 'cmake --build' 'cmake' @('--build', $cmakeBuild, '--target', $Web
 Write-Step "Assembling $outDir"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 Copy-Item -Path (Join-Path $siteSrc '*') -Destination $outDir -Recurse -Force
+Remove-Item -LiteralPath (Join-Path $outDir 'products.json') -Force -ErrorAction SilentlyContinue
 
-# The CMake target may emit into the build dir or (via MKW_PLATFORM_WEB_DIST) straight into dist.
-foreach ($name in @($WebJsName, $WebWasmName)) {
-    $src = $null
-    foreach ($dir in @($cmakeBuild, (Join-Path $cmakeBuild 'web'), $outDir)) {
-        $candidate = Join-Path $dir $name
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $src = $candidate; break }
+# Each target emits into the build dir or (via MKW_PLATFORM_WEB_DIST) straight into dist.
+foreach ($target in $targets) {
+    foreach ($name in @("$target.js", "$target.wasm")) {
+        $src = $null
+        foreach ($dir in @($cmakeBuild, (Join-Path $cmakeBuild 'web'), $outDir)) {
+            $candidate = Join-Path $dir $name
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $src = $candidate; break }
+        }
+        if (-not $src) {
+            Stop-Build "$target did not produce $name (looked in $cmakeBuild, $(Join-Path $cmakeBuild 'web'), $outDir)."
+        }
+        $dest = Join-Path $outDir $name
+        if ($src -ne $dest) { Copy-Item -LiteralPath $src -Destination $dest -Force }
+        Write-Info ('{0} ({1:N1} MiB)' -f $name, ((Get-Item -LiteralPath $dest).Length / 1MB))
     }
-    if (-not $src) {
-        Stop-Build "$WebTarget did not produce $name (looked in $cmakeBuild, $(Join-Path $cmakeBuild 'web'), $outDir). Adjust `$WebJsName/`$WebWasmName at the top of web/build.ps1."
+    foreach ($suffix in $WebExtraSuffixes) {
+        $candidate = Join-Path $cmakeBuild "$target$suffix"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { Copy-Item -LiteralPath $candidate -Destination (Join-Path $outDir "$target$suffix") -Force; Write-Info "$target$suffix" }
     }
-    $dest = Join-Path $outDir $name
-    if ($src -ne $dest) { Copy-Item -LiteralPath $src -Destination $dest -Force }
-    Write-Info ('{0} ({1:N1} MiB)' -f $name, ((Get-Item -LiteralPath $dest).Length / 1MB))
-}
-foreach ($name in $WebExtraOutputs) {
-    $candidate = Join-Path $cmakeBuild $name
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) { Copy-Item -LiteralPath $candidate -Destination (Join-Path $outDir $name) -Force; Write-Info $name }
 }
 
 Write-Info "copying the disc tree (sys/ and files/) to $(Join-Path $outDir 'disc')"
@@ -538,6 +651,30 @@ if ($LASTEXITCODE -ne 0) { Stop-Build 'make_disc_manifest.py failed' }
 if (-not (Test-Path -LiteralPath $manifestOut -PathType Leaf) -or (Get-Item -LiteralPath $manifestOut).Length -eq 0) {
     Stop-Build "$DiscManifestName was not written"
 }
+
+# products.json tells the page which products this site holds (more than one shows a choice screen).
+$products = @([ordered]@{ id = 'WiiCompiled'; title = 'Mario Kart Wii'; glue = 'WiiCompiled.js' })
+$modsOut = Join-Path $outDir $ModsDirName
+Remove-Tree $modsOut
+if ($buildRetro) {
+    $modDest = Join-Path $modsOut $RetroModDirName
+    Write-Info "copying the Retro Rewind mod tree to $modDest"
+    New-Item -ItemType Directory -Force -Path $modsOut | Out-Null
+    Copy-Item -LiteralPath $retroRoot -Destination $modDest -Recurse -Force
+    $modManifest = Join-Path $modsOut "$RetroModDirName-manifest.json"
+    Write-Info "generating $ModsDirName/$RetroModDirName-manifest.json"
+    & $pythonExe @pythonLead $manifestTool --tree $modDest $modManifest
+    if ($LASTEXITCODE -ne 0) { Stop-Build 'make_disc_manifest.py failed for the Retro Rewind mod tree' }
+    $products += [ordered]@{ id = 'RetroRewind'; title = 'Retro Rewind'; glue = 'RetroRewind.js'; modRoot = "$ModsDirName/$RetroModDirName" }
+} else {
+    # A previous build of this dist dir may have had Retro Rewind; do not leave it half there.
+    foreach ($suffix in @('.js', '.wasm', '.data', '.wasm.map')) {
+        Remove-Item -LiteralPath (Join-Path $outDir "$RetroTarget$suffix") -Force -ErrorAction SilentlyContinue
+    }
+}
+$productsJson = ConvertTo-Json -InputObject @($products) -Compress -Depth 4
+[System.IO.File]::WriteAllText((Join-Path $outDir 'products.json'), $productsJson + "`n")
+Write-Info "products.json: $productsJson"
 
 # ---------------------------------------------------------------------------
 # Summary

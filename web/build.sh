@@ -309,7 +309,7 @@ if ((disc_is_tree)); then
     if [[ -f "$disc_image/sys/main.dol" ]]; then
         work_disc=$disc_image
     else
-        found_dol=$(find "$disc_image" -maxdepth 2 -type f -path '*/sys/main.dol' -print 2>/dev/null | head -n1 || true)
+        found_dol=$(find "$disc_image" -maxdepth 3 -type f -path '*/sys/main.dol' -print 2>/dev/null | head -n1 || true)
         [[ -z "$found_dol" ]] || work_disc=$(dirname "$(dirname "$found_dol")")
     fi
     [[ -n "$work_disc" ]] || fail "no sys/main.dol found in $disc_image (or one folder below it). An extracted tree must contain sys/main.dol and files/."
