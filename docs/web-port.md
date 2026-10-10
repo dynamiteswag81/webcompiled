@@ -163,9 +163,21 @@ unless it says "local" (verified by the local session with the real dump).
   `emcmake cmake -S runtime -B build-rt -G Ninja -DCMAKE_BUILD_TYPE=Release
   -DMKW_BUILD_PRODUCTS=OFF && ninja -C build-rt mkw_web_runtime_compile`.
   Edited files still compile natively (clang++ `-fsyntax-only`, x86-64-v3).
-* **Web product graph configures** with a stub shard manifest and produces the
-  intended link line (JSPI, js libraries, IDBFS, embedded `/app` assets); the
-  shard compile flags match the line above.
+* **The real web product boots (no game data):** `web/tests/smoke/run_smoke.sh`
+  runs the real translator on a tiny synthetic DOL
+  (`web/tests/smoke/make_synthetic_generated.py`), links `WiiCompiled.wasm`
+  through the real product graph (no undefined-symbol stubs), serves it with the
+  real page and `web/serve.py`, and drives headless Chromium: config load,
+  WebGPU adapter/device/surface, `_init` sections, the translated entry point,
+  then a clean stop at DVDInit with the report in the page's error overlay (no
+  trap, abort or hang). ~10 min cold build at `-j2`; 7.9 MB wasm.
+* **Disc streaming and saves:** `web/tests/run_web_disc_test.sh` (Node 24 with
+  JSPI, plus headless Chromium): 104+ checks on a generated fake disc (random
+  and cross-block reads, EOF/short reads, LRU cache, coalesced Range requests,
+  404/truncated/no-Range servers, manifest listings) and IDBFS saves surviving a
+  reload.
+* **Canvas sizing:** the drawing buffer follows the canvas CSS size ×
+  devicePixelRatio (600×300 CSS at DPR 2 → 1200×600).
 * **Translator `#embed` companions:** `dotnet test` 645/645; the emitted
   `data_sections_init_blobs.cpp` compiles with em++ and its bytes read back
   equal to the `.bin` files under Node.
@@ -198,12 +210,23 @@ unless it says "local" (verified by the local session with the real dump).
   (`data_sections_init_blobs.cpp`, `mod_data_patches_blobs.cpp`); never both.
 * `web/build.sh`, `web/build.ps1`, `web/serve.py`, `web/site/` (see the spec).
 
+* Disc over HTTP Range (`runtime/src/hle/storage/web_disc.cpp`,
+  `web/js/library_mkw_dvd.js`): the extracted DATA tree is served at
+  `disc/` with `disc-manifest.json` (`web/tools/make_disc_manifest.py`);
+  the runtime sees it at the virtual path `/disc`; 256 KiB blocks, 64 MiB LRU,
+  coalesced requests up to 16 MiB, retries. Page options:
+  `Module.mkwDiscManifestUrl`, `mkwDiscBaseUrl`, `mkwDiscRetries`.
+* Saves: IDBFS on `/home/web_user`, mounted before `main`, synced after file
+  writes and when the page is hidden. Run logs go to `/tmp` (not persisted).
+* Fatal reports reach the page (`mkw_host_report_fatal` → `Module.onMkwFatal`).
+
 ### In progress
-* DVD over HTTP Range + disc manifest + IDBFS persistence
-  (`web/js/library_mkw_dvd.js`, `web/tools/make_disc_manifest.py`).
-* Game-data-free smoke test: link the real runtime + aurora against a synthetic
-  translator output tree and boot it in headless Chromium up to the point the
-  disc is required.
+* Drop-in hosting: `web/host.sh` / `host.ps1` (drop a disc image or extracted
+  tree into `web/game/`, build once with a cached fingerprint, serve),
+  `compose.yaml` + `web/docker/Dockerfile`.
+* Retro Rewind: the build-script leg (`translate-mod`, `RetroRewind` target,
+  `dist/mods/RetroRewind6/` + manifest, `products.json`), the start-screen
+  product choice, and the runtime mount of the pack (streamed like the disc).
 
 ### Needs the real game (local session)
 * Full pipeline end to end: `web/build.sh <image>` (or `build.ps1`, which has
@@ -258,7 +281,7 @@ Build: `emcmake cmake -S aurora-main -B build-web -G Ninja
 5. [x] runtime: single-threaded audio mixing, networking off, platform stubs,
        app paths (`/app`, `$HOME`).
 6. [x] runtime: x86/SSE paths → Emscripten SSE/AVX2 compat, software FP env.
-7. [ ] DVD over HTTP Range + IDBFS NAND (in progress).
+7. [x] DVD over HTTP Range + IDBFS NAND.
 8. [ ] Link translated shards (needs the real game; watch V8 limits).
 9. [x] Frontend page: canvas, loading/progress, controls help, error overlay.
 10. [ ] Performance pass (`-O3`, LTO decisions, code size).
