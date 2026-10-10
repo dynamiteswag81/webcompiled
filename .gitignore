@@ -82,3 +82,5 @@ output.txt
 /game/
 *.wasm
 DATA/
+__pycache__/
+*.pyc
