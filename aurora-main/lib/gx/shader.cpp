@@ -652,6 +652,20 @@ auto fetch_color_attr(const AttrConfig& mapping, std::string_view buf, std::stri
 
 auto attr_load(const ShaderConfig& config, GXAttr attr, std::string_view vidx) -> std::string;
 
+// The twelve vertex-array base offsets in the uniform buffer. A uniform array<u32, N> needs the
+// WGSL language feature uniform_buffer_standard_layout, which older browsers lack (Chromium 141
+// rejects every GX shader without it); array<vec4<u32>, 3> has the identical 48-byte layout and is
+// valid everywhere, so the browser build uses it. Native output stays byte-identical.
+#ifdef __EMSCRIPTEN__
+constexpr std::string_view kArrayStartType = "array<vec4<u32>, 3>";
+inline std::string array_start_ref(u32 index) {
+  return fmt::format("ubuf.array_start[{}][{}]", index / 4u, index % 4u);
+}
+#else
+constexpr std::string_view kArrayStartType = "array<u32, 12>";
+inline std::string array_start_ref(u32 index) { return fmt::format("ubuf.array_start[{}]", index); }
+#endif
+
 static u32 attr_comp_type_size(u8 compType) noexcept {
   switch (static_cast<GXCompType>(compType)) {
   case GX_U8:
@@ -689,13 +703,13 @@ auto normal_group_load(const ShaderConfig& config, u8 group, std::string_view vi
 
   if (mapping.attrType == GX_INDEX8) {
     const std::string indexOffs = offset_plus(offs, mapping.nrmIndexCount == 3 ? group : 0);
-    offs = fmt::format("ubuf.array_start[{}] + raw_fetch_u8_1(&{}, {}) * {}u + {}u", GX_VA_NRM - GX_VA_POS, buf,
+    offs = fmt::format("{} + raw_fetch_u8_1(&{}, {}) * {}u + {}u", array_start_ref(GX_VA_NRM - GX_VA_POS), buf,
                        indexOffs, mapping.stride, groupOffset);
     buf = "abuf"sv;
     le = mapping.le;
   } else if (mapping.attrType == GX_INDEX16) {
     const std::string indexOffs = offset_plus(offs, mapping.nrmIndexCount == 3 ? group * 2u : 0);
-    offs = fmt::format("ubuf.array_start[{}] + raw_fetch_u16_1(&{}, {}, {}) * {}u + {}u", GX_VA_NRM - GX_VA_POS,
+    offs = fmt::format("{} + raw_fetch_u16_1(&{}, {}, {}) * {}u + {}u", array_start_ref(GX_VA_NRM - GX_VA_POS),
                        buf, indexOffs, le, mapping.stride, groupOffset);
     buf = "abuf"sv;
     le = mapping.le;
@@ -715,12 +729,12 @@ auto attr_load(const ShaderConfig& config, GXAttr attr, std::string_view vidx) -
   auto offs = fmt::format("ubuf.vtx_start + {} * {}u + {}u", vidx, config.vtxStride, mapping.offset);
   auto le = false; // Vertex buffer is always big endian (for now)
   if (mapping.attrType == GX_INDEX8) {
-    offs = fmt::format("ubuf.array_start[{}] + raw_fetch_u8_1(&{}, {}) * {}u", attr - GX_VA_POS, buf, offs,
+    offs = fmt::format("{} + raw_fetch_u8_1(&{}, {}) * {}u", array_start_ref(attr - GX_VA_POS), buf, offs,
                        mapping.stride);
     buf = "abuf"sv;
     le = mapping.le;
   } else if (mapping.attrType == GX_INDEX16) {
-    offs = fmt::format("ubuf.array_start[{}] + raw_fetch_u16_1(&{}, {}, {}) * {}u", attr - GX_VA_POS, buf, offs, le,
+    offs = fmt::format("{} + raw_fetch_u16_1(&{}, {}, {}) * {}u", array_start_ref(attr - GX_VA_POS), buf, offs, le,
                        mapping.stride);
     buf = "abuf"sv;
     le = mapping.le;
@@ -2067,7 +2081,7 @@ struct Uniform {{
     render_viewport_size: vec2f,
     logical_viewport_size: vec2f,
     pad: vec2u,
-    array_start: array<u32, 12>,{0}
+    array_start: {11},{0}
 }};
 @group(0) @binding(0)
 var<storage, read> vbuf: array<u32>;
@@ -2095,7 +2109,7 @@ fn fs_main(in: VertexOutput) -> {9} {{{6}{5}
 )""",
                                         uniBufAttrs, texBindings, vtxOutAttrs, vtxInAttrs, vtxXfrAttrs, fragmentFn,
                                         fragmentFnPre, vtxXfrAttrsPre, uniformPre, fragmentReturnType,
-                                        fragmentReturn);
+                                        fragmentReturn, kArrayStartType);
   wgpu::ShaderSourceWGSL wgslDescriptor{};
   wgslDescriptor.code = shaderSource.c_str();
   const auto label = fmt::format("GX Shader {:x}", hash);
