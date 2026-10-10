@@ -1,6 +1,7 @@
 # Game files go here
 
-Drop your own game files into this folder, then run `web/host.sh` (or `docker compose up`).
+Drop your own game files into this folder, then double-click `build.bat` in the main folder
+(Windows), or run `web/host.sh` or `docker compose up` (Linux, macOS).
 Nothing in this folder is ever committed or uploaded; only this README is tracked.
 
 ## What to drop
