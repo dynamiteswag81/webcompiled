@@ -164,6 +164,10 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
   transition: opacity 0.2s;
 }
 .toolbar:hover, .toolbar:focus-within { opacity: 1; }
+/* Auto-hidden after a few idle seconds (main.js) so it does not cover the in-game FPS counter in the
+   canvas's top-right corner; pointer movement over the stage brings it back. */
+.toolbar.idle:not(:hover):not(:focus-within) { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .toolbar { transition: none; } }
 
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
 

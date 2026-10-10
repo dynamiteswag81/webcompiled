@@ -303,6 +303,28 @@
   });
   if (!el.stage.requestFullscreen) el.fullscreen.hidden = true;
 
+  // Toolbar auto-hide: the toolbar sits over the canvas's top-right corner, where the in-game FPS
+  // counter is drawn. It fades out after a few idle seconds and returns on pointer movement, touch,
+  // or keyboard focus (Tab).
+  const TOOLBAR_IDLE_MS = 3000;
+  let toolbarTimer = 0;
+  function hideToolbarWhenIdle() {
+    if (el.toolbar.matches(':hover, :focus-within')) { // never hide under the pointer or focus
+      toolbarTimer = setTimeout(hideToolbarWhenIdle, TOOLBAR_IDLE_MS);
+      return;
+    }
+    el.toolbar.classList.add('idle');
+  }
+  function showToolbar() {
+    el.toolbar.classList.remove('idle');
+    clearTimeout(toolbarTimer);
+    toolbarTimer = setTimeout(hideToolbarWhenIdle, TOOLBAR_IDLE_MS);
+  }
+  for (const type of ['mousemove', 'pointerdown', 'touchstart']) {
+    el.stage.addEventListener(type, showToolbar, { passive: true });
+  }
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Tab') showToolbar(); });
+
   // ---------------------------------------------------------------------------------------
   // Compatibility check
   // ---------------------------------------------------------------------------------------
@@ -586,6 +608,7 @@
       setPhase('running');
       showLoader(false);
       el.toolbar.hidden = false;
+      showToolbar();
       canvas.focus();
     },
     onAbort: function (what) {

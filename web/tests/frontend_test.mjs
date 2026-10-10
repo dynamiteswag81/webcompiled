@@ -133,6 +133,16 @@ try {
     await waitPhase(page, 'running');
     check(!(await page.isVisible('#loader')), 'loader hidden once the runtime is initialized');
     check(await page.isVisible('#toolbar'), 'toolbar visible while running');
+    // The toolbar auto-hides when idle so it does not cover the in-game FPS counter (top right)
+    // and comes back on pointer movement.
+    const toolbarIdle = () => page.evaluate(() => document.getElementById('toolbar').classList.contains('idle'));
+    await page.mouse.move(300, 300);
+    check(!(await toolbarIdle()), 'toolbar shown right after pointer movement');
+    await page.waitForFunction(() => document.getElementById('toolbar').classList.contains('idle'), null, { timeout: 8000 });
+    await page.waitForFunction(() => getComputedStyle(document.getElementById('toolbar')).opacity === '0', null, { timeout: 3000 })
+      .then(() => check(true, 'idle toolbar is faded out'), () => check(false, 'idle toolbar is faded out'));
+    await page.mouse.move(320, 310);
+    check(!(await toolbarIdle()), 'toolbar returns on pointer movement');
     const px = await page.evaluate(() => {
       const c = document.getElementById('canvas');
       const d = c.getContext('2d').getImageData(c.width >> 1, c.height >> 1, 1, 1).data;
