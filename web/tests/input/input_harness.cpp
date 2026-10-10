@@ -2,7 +2,7 @@
 // library, ImGui on WebGPU) plus the real runtime glue (runtime/src/platform/web/web_input.cpp,
 // web/js/library_mkw_input.js), linked as WiiCompiled.js/.wasm so the real page (web/site) hosts
 // it. Each frame it does what the game's PADRead path does on the web: aurora_update (SDL pumps
-// navigator.getGamepads and keyboard events), PADRead, WebInput::PublishPadStatus. The headless
+// navigator.getGamepads and keyboard events), PADRead, WebInput::ApplyTouch, WebInput::PublishPadStatus. The headless
 // test (input_test.mjs) injects fake gamepads and keys and reads Module.mkwInput.
 //
 // Test hooks (Module properties the test sets; polled once per frame on the main loop):
@@ -109,6 +109,7 @@ int main() {
 
     PADStatus statuses[PAD_CHANMAX]{};
     const u32 rumbleMask = PADRead(statuses);
+    WebInput::ApplyTouch(statuses, PAD_CHANMAX);
     WebInput::PublishPadStatus(statuses, PAD_CHANMAX, rumbleMask);
 
     if (const int motor = harness_take_motor(); motor >= 0) {

@@ -192,6 +192,24 @@ try {
   await page.keyboard.up('ArrowUp');
   await page.keyboard.up('ArrowLeft');
 
+  // ---- 1b. on-screen touch controls (web/site/touch.js -> Module.mkwInput.setTouch) ---------
+  const setTouch = (t) => page.evaluate((x) => window.Module.mkwInput.setTouch(x), t);
+  check(await setTouch({ active: true, button: 0x0100 | 0x0020, stickX: -90, stickY: 50, triggerR: 255 }) === true,
+    'setTouch writes once the runtime attached');
+  p = await waitPorts(page, (q) => q[0].touch && q[0].buttons.join() === 'A,R', 'touch A + R');
+  check(p && p[0].stickX === -90 && p[0].stickY === 50 && p[0].triggerR === 255 && p[0].keyboard,
+    `touch: A + R and the analog stick reach port 1, next to the keyboard (${p && JSON.stringify(p[0])})`);
+  await page.keyboard.down('KeyZ');
+  await page.keyboard.down('ArrowRight');
+  p = await waitPorts(page, (q) => q[0].buttons.join() === 'A,B,R' && q[0].stickX === 127, 'touch + keyboard');
+  check(!!p && p[0].stickY === 50, 'touch: merged with the keyboard (buttons ORed, the larger deflection wins per axis)');
+  await page.keyboard.up('KeyZ');
+  await page.keyboard.up('ArrowRight');
+  await setTouch({ active: false, button: 0x0100, stickX: 100 });
+  p = await waitPorts(page, (q) => !q[0].touch && neutral(q[0]), 'touch hidden');
+  check(!!p, 'touch: nothing reaches the game while the controls are hidden');
+  check(p && p.slice(1).every((x) => !x.connected), 'touch: only port 1 is affected');
+
   let d = await waitDesc(page, (x) => x.ports[0].keys.length === 22, 'port 1 keys');
   const live = new Map((d ? d.ports[0].keys : []).map((k) => [k.control, k.key]));
   const mismatched = layout.filter((e) => live.get(e.control) !== e.sdlName);

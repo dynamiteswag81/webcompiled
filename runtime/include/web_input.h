@@ -19,6 +19,12 @@ void Initialize() noexcept;
 // After every guest PADRead, with the statuses as the game receives them.
 void PublishPadStatus(const PADStatus* statuses, uint32_t count, uint32_t rumbleMask) noexcept;
 
+// Merges the page's on-screen touch controls (web/site/touch.js) into port 1, after the keyboard,
+// gamepads and InputBindings: buttons are ORed in, each stick / trigger takes whichever source is
+// pushed further. Does nothing while the touch controls are hidden; the caller skips it while the
+// settings bar blocks game input.
+void ApplyTouch(PADStatus* statuses, uint32_t count) noexcept;
+
 // Records the last motor command per port (shown in the debug view).
 void NoteMotor(uint32_t port, uint32_t command) noexcept;
 

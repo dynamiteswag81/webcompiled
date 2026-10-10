@@ -268,8 +268,8 @@ this list; the report's repro steps are repeated where they apply.
   `uniform_buffer_standard_layout` (uniform `array<vec4<u32>, 3>` on the web), so Chromium 141
   compiles them; the documented Chrome/Edge 137+ minimum holds.
 
-**Input** (`web/tests/input/run_input_test.sh`: native merge test, layout sync, 83 browser
-checks with fake pads and real key events)
+**Input** (`web/tests/input/run_input_test.sh`: native merge test, layout sync, 88 browser
+checks with fake pads, real key events and the touch path)
 * Default keyboard on player 1 with no setup, merged with a gamepad on the same port (buttons
   ORed, larger stick deflection, max trigger). Layout: arrows = stick, X = A, Z = B, Left Shift
   = R, Space = L, Enter = Start, C/V/Q = X/Y/Z, IJKL = C-stick, WASD = D-pad. Source of truth:
@@ -296,6 +296,27 @@ checks with fake pads and real key events)
      is highlighted in the Controls panel; "Restore default keys"; controller presets; assigning
      a pad to a player. On Windows, F10 must not also focus the browser menu.
   8. A pad without the browser's standard mapping shows the warning in the Controls panel.
+
+**Touch controls (phones and tablets)** (`web/site/touch.js`; `frontend_test.mjs` drives them
+with real multi-touch in landscape and portrait; `input_test.mjs` checks them in the wasm)
+* On-screen controller for player 1: a floating analog stick (lower left), A, B, Drift (R + full
+  analog R), Item (L), Trick (D-pad up), Start, an "Auto A" toggle that keeps accelerating, and ☰
+  for the page toolbar. Thumbs slide between buttons. The page writes the state into wasm memory
+  (`Module.mkwInput.setTouch`); `WebInput::ApplyTouch` merges it into port 1 after the keyboard
+  and gamepads (buttons ORed, larger deflection wins) on every PADRead, never while the F10 bar
+  blocks input.
+* Shown automatically once the screen is touched (hidden again on keyboard or gamepad use), or
+  always / never; size, opacity, vibration and "fullscreen in landscape on start" in the Controls
+  panel (saved per browser). Game rumble → `navigator.vibrate` when no gamepad is on player 1.
+* *Verify on a real phone* (Chrome on Android with WebGPU; over `https://`, see "Let other
+  people play"):
+  1. The game starts fullscreen in landscape; the controls do not cover the HUD badly; the
+     toolbar does not block them.
+  2. Menus with the stick and A/B; a race with Auto A, steering, drifting (slide from A onto
+     Drift), items, tricks off a ramp, pause.
+  3. Performance with the overlay shown (it only changes on touches).
+  4. Vibration on presses and on item hits.
+  5. A tablet with a keyboard or gamepad: the controls get out of the way once they are used.
 
 **Several players and hosting**
 * One tab saves: an exclusive Web Lock on the save store; a second tab runs read-only with a

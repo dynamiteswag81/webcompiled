@@ -103,8 +103,9 @@ precompiled in `web/prebuilt/`, so a host only compiles the runtime and their ow
 
 ## Playing
 
-- **Browser:** Chrome or Edge 137 or newer, on desktop. The page checks for WebGPU and JSPI and
-  tells you what is missing. Firefox and Safari will work once they ship both.
+- **Browser:** Chrome or Edge 137 or newer, on desktop, or Chrome on Android phones and tablets
+  that have WebGPU (not yet tested with the game). The page checks for WebGPU and JSPI and tells
+  you what is missing. Firefox and Safari will work once they ship both.
 - **Controls:** the keyboard works right away, and any gamepad the browser sees (Xbox,
   PlayStation, Switch Pro, ...) joins automatically: the first pad plays alongside the keyboard
   as player 1, more pads become players 2–4. Press a button on a pad once so the browser
@@ -123,6 +124,11 @@ precompiled in `web/prebuilt/`, so a host only compiles the runtime and their ow
 
   Press `?` on the page for the controls panel (it lists connected pads), and F10 in the game to
   rebind keys or controllers.
+- **Touch screens:** on a phone or tablet, on-screen controls appear as soon as you touch the
+  screen: drag in the lower left to steer, and use A, B, Drift, Item and Trick on the right.
+  **Auto A** at the top keeps accelerating for you. Size, opacity and vibration are in the
+  controls panel (☰, then Controls). Other devices need the `https://` address from "Let other
+  people play".
 - **Saves** stay in your browser. Clearing the site's data deletes them.
 - **No online play:** browsers have no raw network sockets.
 

@@ -69,6 +69,8 @@ const browser = await chromium.launch({
 async function newPage(opts = {}) {
   const ctx = await browser.newContext({
     viewport: opts.viewport ?? { width: 1280, height: 720 },
+    hasTouch: !!opts.touch,
+    isMobile: !!opts.touch,
     permissions: ['clipboard-read', 'clipboard-write'],
   });
   const page = await ctx.newPage();
@@ -340,6 +342,159 @@ try {
     check(await noHScroll(page), 'phone: no horizontal scroll (error)');
     await shot(page, '10-phone-error');
     await page.context().close();
+  }
+
+  // 5b. Touch controls (touch.js): real multi-touch through CDP, state as the runtime receives it ---
+  {
+    // Desktop: never shown without a touch.
+    const desk = await newPage();
+    await desk.goto(base);
+    await waitPhase(desk, 'ready');
+    await desk.click('#btn-start');
+    await waitPhase(desk, 'running');
+    check(await desk.evaluate(() => document.getElementById('touch').hidden), 'touch: hidden on a desktop that was not touched');
+    check(await desk.evaluate(() => document.getElementById('btn-touch').hidden), 'touch: no Touch toolbar button without a touch screen');
+    check(await desk.evaluate(() => {
+      const heads = [...document.querySelectorAll('#help h3')].map((h) => h.textContent);
+      return heads[0] === 'Keyboard (player 1)' && heads.indexOf('Touch screens') === heads.indexOf('Rebinding') - 1;
+    }), 'touch: on a desktop the Controls panel keeps the keyboard first, touch before Rebinding');
+    await desk.context().close();
+
+    for (const [label, viewport] of [['landscape', { width: 844, height: 390 }], ['portrait', { width: 390, height: 844 }]]) {
+      const page = await newPage({ viewport, touch: true });
+      await page.goto(base);
+      await waitPhase(page, 'ready');
+      await page.tap('#btn-start');
+      await waitPhase(page, 'running');
+      // Stand-in for library_mkw_input.js: record what the page hands the runtime.
+      await page.evaluate(() => {
+        window.__touch = [];
+        window.Module.mkwInput = {
+          setTouch: (t) => { window.__touch.push(t); return true; },
+          ports: () => [{ motor: 0, controller: false, touch: true }],
+          reads: () => 1,
+          description: () => null,
+          buttonNames: () => [],
+        };
+        window.Module.onMkwInputReady();
+      });
+      const last = () => page.evaluate(() => window.__touch[window.__touch.length - 1] || null);
+      const center = (sel) => page.evaluate((s) => {
+        const r = document.querySelector(s).getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }, sel);
+      check(await page.evaluate(() => !document.getElementById('touch').hidden), `touch (${label}): shown after starting from a touch screen`);
+      check((await last())?.active === true, `touch (${label}): the runtime is told the controls are active`);
+      check(await noHScroll(page), `touch (${label}): no horizontal scroll`);
+      check(await page.evaluate(() => [...document.querySelectorAll('.touch-btn')].every((e) => {
+        const r = e.getBoundingClientRect();
+        return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+      })), `touch (${label}): every button is on screen`);
+      check(await page.evaluate(() => {
+        const rs = [...document.querySelectorAll('.touch-btn, .touch-stick')].map((e) => e.getBoundingClientRect());
+        return rs.every((a, i) => rs.every((b, j) => i === j || a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top));
+      }), `touch (${label}): buttons and the stick do not overlap`);
+      await page.evaluate(() => window.WiiCompiledUI.showToolbar());
+      check(await page.evaluate(() => {
+        const t = document.getElementById('toolbar').getBoundingClientRect();
+        return [...document.querySelectorAll('.touch-btn, .touch-stick')].every((e) => {
+          const r = e.getBoundingClientRect();
+          return t.right <= r.left || r.right <= t.left || t.bottom <= r.top || r.bottom <= t.top;
+        });
+      }), `touch (${label}): the page toolbar does not cover any control`);
+      await shot(page, `10-touch-${label}`);
+
+      const cdp = await page.context().newCDPSession(page);
+      const touch = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+      const zone = await page.evaluate(() => {
+        const r = document.querySelector('.touch-zone').getBoundingClientRect();
+        return { x: r.left + r.width * 0.5, y: r.top + r.height * 0.6 };
+      });
+      const a = await center('.touch-a');
+      const drift = await center('.touch-r');
+
+      await touch('touchStart', [{ x: zone.x, y: zone.y, id: 1 }]);
+      await touch('touchMove', [{ x: zone.x + 200, y: zone.y, id: 1 }]);
+      let t = await last();
+      check(t.stickX === 127 && t.stickY === 0, `touch (${label}): dragging right is full right on the stick (${t.stickX}, ${t.stickY})`);
+      await touch('touchMove', [{ x: zone.x + 10, y: zone.y - 200, id: 1 }]);
+      t = await last();
+      check(t.stickY > 120 && Math.abs(t.stickX) < 15, `touch (${label}): dragging up is stick up (${t.stickX}, ${t.stickY})`);
+      await touch('touchMove', [{ x: zone.x + 2, y: zone.y + 2, id: 1 }]);
+      t = await last();
+      check(t.stickX === 0 && t.stickY === 0, `touch (${label}): small movements stay in the dead zone`);
+
+      // Second finger: A while steering, then slide onto Drift.
+      await touch('touchMove', [{ x: zone.x - 200, y: zone.y, id: 1 }]);
+      await touch('touchStart', [{ x: zone.x - 200, y: zone.y, id: 1 }, { x: a.x, y: a.y, id: 2 }]);
+      t = await last();
+      check(t.button === 0x100 && t.stickX === -127, `touch (${label}): A and full left together (button ${t.button}, stick ${t.stickX})`);
+      await touch('touchMove', [{ x: zone.x - 200, y: zone.y, id: 1 }, { x: drift.x, y: drift.y, id: 2 }]);
+      t = await last();
+      check(t.button === 0x20 && t.triggerR === 255, `touch (${label}): sliding from A onto Drift holds R with the analog trigger (button ${t.button})`);
+      await touch('touchEnd', []);
+      t = await last();
+      check(t.button === 0 && t.stickX === 0 && t.stickY === 0 && t.active, `touch (${label}): lifting every finger releases everything`);
+
+      // Auto A keeps A held with no finger on it; a tap on A meanwhile does not let go; tap Auto A again to stop.
+      const latch = await center('.touch-latch');
+      await touch('touchStart', [{ x: latch.x, y: latch.y, id: 3 }]);
+      await touch('touchEnd', []);
+      t = await last();
+      check(t.button === 0x100 && await page.evaluate(() => document.querySelector('.touch-a').classList.contains('latched')),
+        `touch (${label}): Auto A keeps accelerating`);
+      await touch('touchStart', [{ x: a.x, y: a.y, id: 4 }, { x: zone.x, y: zone.y, id: 9 }]);
+      await touch('touchEnd', []);
+      check((await last()).button === 0x100, `touch (${label}): pressing A meanwhile keeps it held`);
+      await touch('touchStart', [{ x: latch.x, y: latch.y, id: 4 }]);
+      await touch('touchEnd', []);
+      t = await last();
+      check(t.button === 0, `touch (${label}): tapping Auto A again lets go`);
+
+      // Touches on the controls do not pop up the page toolbar.
+      await page.evaluate(() => document.getElementById('toolbar').classList.add('idle'));
+      await touch('touchStart', [{ x: a.x, y: a.y, id: 5 }]);
+      await touch('touchEnd', []);
+      check(await page.evaluate(() => document.getElementById('toolbar').classList.contains('idle')), `touch (${label}): pressing a control leaves the toolbar hidden`);
+
+      if (label === 'landscape') {
+        // Auto mode: the keyboard takes over, a touch brings them back; the toolbar toggle forces them.
+        await page.keyboard.press('KeyX');
+        check(await page.evaluate(() => document.getElementById('touch').hidden) && (await last()).active === false,
+          'touch: hidden again (and inactive in the runtime) once the keyboard is used');
+        await touch('touchStart', [{ x: 300, y: 100, id: 6 }]);
+        await touch('touchEnd', []);
+        check(await page.evaluate(() => !document.getElementById('touch').hidden), 'touch: a touch brings them back');
+        await page.evaluate(() => document.getElementById('btn-touch').click());
+        check(await page.evaluate(() => document.getElementById('touch').hidden && JSON.parse(localStorage.getItem('wiicompiled.touch')).show === 'never'),
+          'touch: the toolbar button turns them off and remembers it');
+        await page.evaluate(() => document.getElementById('btn-touch').click());
+        check(await page.evaluate(() => !document.getElementById('touch').hidden && document.getElementById('touch-show').value === 'always'),
+          'touch: and on again (the Controls panel shows the same setting)');
+        // Size setting scales the controls.
+        const before = await page.evaluate(() => document.querySelector('.touch-a').getBoundingClientRect().width);
+        await page.evaluate(() => { const r = document.getElementById('touch-size'); r.value = '130'; r.dispatchEvent(new Event('input')); });
+        const after = await page.evaluate(() => document.querySelector('.touch-a').getBoundingClientRect().width);
+        check(after > before * 1.2, `touch: the Size setting scales the buttons (${before} -> ${after})`);
+        // ☰ brings the faded-out toolbar back; while faded it takes no touches.
+        await page.evaluate(() => document.getElementById('toolbar').classList.add('idle'));
+        check(await page.evaluate(() => getComputedStyle(document.getElementById('toolbar')).pointerEvents === 'none'),
+          'touch: the faded-out toolbar takes no touches');
+        const menu = await center('.touch-menu');
+        await touch('touchStart', [{ x: menu.x, y: menu.y, id: 7 }]);
+        await touch('touchEnd', []);
+        check(await page.evaluate(() => !document.getElementById('toolbar').classList.contains('idle')), 'touch: ☰ brings the toolbar back');
+        await page.tap('#btn-help');
+        check(await page.evaluate(() => !document.getElementById('help').hidden), 'touch: and its Controls button opens the panel');
+        check(await page.evaluate(() => {
+          const heads = [...document.querySelectorAll('#help h3')].map((h) => h.textContent);
+          return heads[0] === 'Touch screens';
+        }), 'touch: the Controls panel leads with the touch section');
+        await shot(page, '11-touch-help');
+        check(await page.evaluate(() => document.getElementById('error').hidden), 'touch: no error overlay along the way');
+      }
+      await page.context().close();
+    }
   }
 
   // 6. Product selection (products.json) ---------------------------------------------------------

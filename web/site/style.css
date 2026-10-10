@@ -296,3 +296,114 @@ kbd {
   white-space: pre;
   overflow-x: auto;
 }
+
+/* ---- on-screen touch controls (touch.js) ------------------------------- */
+/* The layer covers the stage but lets touches through except on the controls themselves.
+   Sizes scale with --touch-scale (Controls panel "Size"), sitting inside the safe areas. */
+.touch {
+  --s: var(--touch-scale, 1);
+  --edge-l: max(12px, env(safe-area-inset-left));
+  --edge-r: max(12px, env(safe-area-inset-right));
+  --edge-b: max(12px, env(safe-area-inset-bottom));
+  --edge-t: max(10px, env(safe-area-inset-top));
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  opacity: var(--touch-opacity, 0.6);
+}
+.touch-zone, .touch-btn { pointer-events: auto; touch-action: none; }
+
+/* Steering: a thumb anywhere in the lower left drops the stick where it lands. */
+.touch-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 45%;
+  height: 65%;
+}
+.touch-stick {
+  position: absolute;
+  left: calc(var(--edge-l) + 76px * var(--s));
+  top: calc(100% - var(--edge-b) - 76px * var(--s));
+  width: calc(112px * var(--s));
+  height: calc(112px * var(--s));
+  margin: calc(-56px * var(--s)) 0 0 calc(-56px * var(--s));
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  background: rgba(20, 24, 34, 0.45);
+  pointer-events: none;
+}
+.touch-stick.active { border-color: rgba(255, 255, 255, 0.85); }
+.touch-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(52px * var(--s));
+  height: calc(52px * var(--s));
+  margin: calc(-26px * var(--s)) 0 0 calc(-26px * var(--s));
+  border-radius: 50%;
+  background: rgba(232, 236, 244, 0.85);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.touch-btn {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--d) * var(--s));
+  height: calc(var(--d) * var(--s));
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  background: rgba(20, 24, 34, 0.5);
+  color: #fff;
+  font: 700 calc(var(--f, 15px) * var(--s)) / 1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  cursor: default;
+}
+.touch-btn.held { background: rgba(232, 236, 244, 0.85); color: #0b0d12; text-shadow: none; }
+
+/* Right thumb cluster, measured from the bottom-right corner. */
+.touch-a     { --d: 92px; --f: 28px; right: calc(var(--edge-r) + 26px * var(--s)); bottom: calc(var(--edge-b) + 34px * var(--s)); background: rgba(46, 140, 72, 0.6); }
+.touch-b     { --d: 64px; --f: 22px; right: calc(var(--edge-r) + 128px * var(--s)); bottom: calc(var(--edge-b) + 8px * var(--s)); background: rgba(176, 52, 52, 0.55); }
+.touch-r     { --d: 68px; right: calc(var(--edge-r) + 120px * var(--s)); bottom: calc(var(--edge-b) + 92px * var(--s)); }
+.touch-l     { --d: 64px; right: calc(var(--edge-r) + 34px * var(--s)); bottom: calc(var(--edge-b) + 138px * var(--s)); }
+.touch-trick { --d: 56px; --f: 13px; right: calc(var(--edge-r) + 206px * var(--s)); bottom: calc(var(--edge-b) + 40px * var(--s)); }
+.touch-a.latched { box-shadow: 0 0 0 4px rgba(76, 208, 138, 0.9); }
+
+/* Top row on the left (the page toolbar keeps the right): menu, Start, Auto A. */
+.touch-start, .touch-menu, .touch-latch {
+  --d: 40px;
+  --f: 13px;
+  top: var(--edge-t);
+  border-radius: 999px;
+}
+.touch-menu  { --f: 18px; left: var(--edge-l); }
+.touch-start { width: calc(72px * var(--s)); left: calc(var(--edge-l) + 50px * var(--s)); }
+.touch-latch { width: calc(72px * var(--s)); left: calc(var(--edge-l) + 132px * var(--s)); }
+
+/* Portrait: the cluster is wider than the space next to the stick, so Trick goes on top. */
+@media (orientation: portrait) {
+  .touch-trick { right: calc(var(--edge-r) + 128px * var(--s)); bottom: calc(var(--edge-b) + 178px * var(--s)); }
+}
+
+/* While the touch controls are shown the page toolbar sits under their top row, and once it has
+   faded out it no longer takes touches (☰ brings it back). */
+.touch-on .toolbar { top: calc(var(--toolbar-top, max(10px, env(safe-area-inset-top))) + 50px); flex-wrap: wrap; justify-content: flex-end; max-width: calc(100% - 2 * var(--gutter)); }
+.touch-on .toolbar .chip { padding: 5px 10px; }
+.touch-on .toolbar.idle:not(:focus-within) { opacity: 0; pointer-events: none; }
+.touch-settings { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; align-items: center; margin: 10px 0 4px; font-size: 0.925rem; }
+.touch-settings select, .touch-settings input[type="range"] { width: 100%; max-width: 320px; }
+.touch-settings select {
+  padding: 6px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #1d2230;
+  color: var(--text);
+  font: inherit;
+}
