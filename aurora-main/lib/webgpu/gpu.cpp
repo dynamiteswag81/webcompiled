@@ -599,13 +599,30 @@ bool initialize(AuroraBackend auroraBackend) {
   g_adapter.GetInfo(&g_adapterInfo);
   g_backendType = g_adapterInfo.backendType;
   const auto backendName = magic_enum::enum_name(g_backendType);
-  auto adapterName = g_adapterInfo.device;
-  if (adapterName.IsUndefined()) {
-    adapterName = wgpu::StringView("Unknown");
+  // Browsers withhold most adapter details (privacy), so `device` is often an empty string; fall back to
+  // vendor/architecture so the log still says what GPU family it is.
+  const auto stringViewText = [](const wgpu::StringView& view) -> std::string {
+    if (view.IsUndefined() || view.data == nullptr) {
+      return {};
+    }
+    return view.length == WGPU_STRLEN ? std::string(view.data) : std::string(view.data, view.length);
+  };
+  std::string adapterName = stringViewText(g_adapterInfo.device);
+  if (adapterName.empty()) {
+    const std::string vendor = stringViewText(g_adapterInfo.vendor);
+    const std::string architecture = stringViewText(g_adapterInfo.architecture);
+    adapterName = vendor;
+    if (!architecture.empty()) {
+      adapterName += adapterName.empty() ? "" : " ";
+      adapterName += architecture;
+    }
+    if (adapterName.empty()) {
+      adapterName = "Unknown (withheld by the browser)";
+    }
   }
-  auto description = g_adapterInfo.description;
-  if (description.IsUndefined()) {
-    description = wgpu::StringView("Unknown");
+  std::string description = stringViewText(g_adapterInfo.description);
+  if (description.empty()) {
+    description = "Unknown";
   }
   Log.info("Graphics adapter information\n  API: {}\n  Device: {} ({})\n  Driver: {}", backendName, adapterName,
            magic_enum::enum_name(g_adapterInfo.adapterType), description);

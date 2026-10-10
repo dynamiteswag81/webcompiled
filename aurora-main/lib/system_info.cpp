@@ -35,6 +35,9 @@ typedef LONG NTSTATUS, *PNTSTATUS;
 extern "C" NTSYSAPI NTSTATUS NTAPI RtlGetVersion(PRTL_OSVERSIONINFOEXW lpVersionInformation);
 #elif __APPLE__
 #include "sys/sysctl.h"
+#elif defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#include <cstdlib>
 #elif linux
 #include <ranges>
 #include <fstream>
@@ -59,9 +62,19 @@ static void LogMisc();
 void log_system_information() {
   Log.info("CPU model: {}", GetCpuModel());
   const auto memSize = GetMemoryAmount() / 1024 / 1024;
+#if defined(__EMSCRIPTEN__)
+  // The browser only offers a coarse, capped hint (navigator.deviceMemory); say so, and say nothing
+  // rather than "0 MiB" when it is not exposed (Firefox, Safari).
+  if (memSize != 0) {
+    Log.info("Memory: ~{} MiB (navigator.deviceMemory: approximate, capped by the browser)", memSize);
+  }
+#else
   Log.info("Memory: {} MiB", memSize);
+#endif
 
-#if defined(__x86_64__) || defined(_M_X64) || defined(_M_X64)
+#if defined(__EMSCRIPTEN__)
+  Log.info("Architecture: wasm32 (WebAssembly)");
+#elif defined(__x86_64__) || defined(_M_X64) || defined(_M_X64)
   Log.info("Architecture: x86_64");
 #elif defined(__aarch64__) || defined(_M_ARM64)
   Log.info("Architecture: aarch64");
@@ -244,6 +257,49 @@ std::string GetOSVersion() {
 
 void LogMisc() {
   // Nada.
+}
+#elif defined(__EMSCRIPTEN__)
+
+// Browser: everything comes from `navigator`, read through emscripten_run_script_* (no extra
+// runtime methods needed; the returned string lives in a shared buffer, so copy it at once).
+static std::string runScriptString(const char* script) {
+  const char* text = emscripten_run_script_string(script);
+  return text != nullptr ? std::string(text) : std::string();
+}
+
+std::string GetCpuModel() {
+  // The browser does not expose a CPU model; report what it does expose.
+  auto summary = runScriptString(
+    R"JS((function(){var n=navigator.hardwareConcurrency|0;return n>0?n+' logical processor(s) (navigator.hardwareConcurrency)':'';})())JS");
+  return summary.empty() ? Unknown : summary;
+}
+
+uint64_t GetMemoryAmount() {
+  // Not available everywhere; Chrome rounds to a power of two and caps at 8.
+  const int mib = emscripten_run_script_int(
+    R"JS(typeof navigator.deviceMemory==='number'?Math.round(navigator.deviceMemory*1024):0)JS");
+  return static_cast<uint64_t>(mib) * 1024u * 1024u;
+}
+
+std::string GetOSVersion() {
+  auto summary = runScriptString(R"JS((function(){
+    var text='';var d=navigator.userAgentData;
+    if(d){
+      if(d.platform)text=d.platform;
+      if(d.brands&&d.brands.length){
+        // Skip the GREASE entry ("Not A;Brand") browsers add on purpose.
+        var b=d.brands.filter(function(x){return !/not.?a.?brand/i.test(x.brand);})
+                      .map(function(x){return x.brand+' '+x.version;});
+        if(b.length)text+=(text?', ':'')+b.join(', ');
+      }
+    }
+    return text||navigator.userAgent||'';
+  })())JS");
+  return summary.empty() ? Unknown : summary;
+}
+
+void LogMisc() {
+  // GPU details are logged by the WebGPU adapter setup ("Graphics adapter information").
 }
 #elif linux
 
