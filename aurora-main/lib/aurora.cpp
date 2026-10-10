@@ -997,12 +997,16 @@ bool present_presentation_job(const PresentationJob& job) {
             PresentClock::now() - submitStarted);
         // Pace the Present() call itself, not the whole unit, so acquire/encode/submit variance stays out
         // of the cadence. Holding the image across the wait is safe while the surface lock is held.
+#ifndef __EMSCRIPTEN__
+        // (The browser presents the canvas when control returns to its event loop, so the caller,
+        // the guest's VI pacing, owns the wait there; spinning here would only freeze the page.)
         if (job.presentAt != PresentClock::time_point{}) {
           const auto scheduleWaitStarted = PresentClock::now();
           wait_until_precise(job.presentAt);
           scheduleWaitDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(
               PresentClock::now() - scheduleWaitStarted);
         }
+#endif
         // A native resize can arrive after acquisition, so drop the obsolete image and let the render
         // worker reconfigure at its ordered frame boundary.
         if (!g_surfaceReconfigurePending.load(std::memory_order_acquire) &&

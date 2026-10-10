@@ -29,6 +29,7 @@
 #endif
 
 #include <aurora/aurora.h>
+#include "platform/web_host.h"
 
 // Forward declaration for OSWakeupThread - used to wake threads on VI retrace queue
 extern "C" void OSWakeupThread_HLE_801aaaa4(CpuContext* ctx);
@@ -165,6 +166,14 @@ void SleepPreciselyUntil(Clock::time_point deadline, bool finishWithSpin = false
     if (now >= deadline) {
         return;
     }
+#if defined(__EMSCRIPTEN__)
+    // The browser build cannot block or spin the page's only thread: suspend until the deadline
+    // (timer, then macrotask hops for the final stretch, which also covers the spin window).
+    (void)finishWithSpin;
+    (void)spinWindow;
+    WebHost::SleepUntil(deadline);
+    return;
+#endif
     const auto timerDeadline =
         finishWithSpin && deadline - now > spinWindow ? deadline - spinWindow : deadline;
 #if defined(_WIN32)
@@ -578,6 +587,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     }
 
     aurora_end_frame();
+    // Browser build: give the page a turn every frame so the canvas presents and input arrives
+    // even when the frame ran late and pacing below has nothing left to wait for. No-op natively.
+    WebHost::Yield();
     if (paceThisFrame) {
         PaceToRetraceBoundary(paceDeadline);
         std::lock_guard<std::mutex> lock(g_viMutex);

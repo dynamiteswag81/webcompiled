@@ -10,7 +10,10 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 project(mkw_recompiled)
 
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(EMSCRIPTEN)
+    # Browser build (emcmake): wasm32 Clang. See docs/web-port.md.
+    set(MKW_PLATFORM_WEB TRUE)
+elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "WiiCompiled requires a 64-bit Clang toolchain")
 endif()
 
@@ -26,7 +29,17 @@ if(APPLE AND CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_SYSTEM_PROCESSOR "${_mkw_osx_arch}")
 endif()
 
-if(WIN32 AND MINGW AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
+if(MKW_PLATFORM_WEB)
+    # Every object in the final module, third-party code included, must use native wasm
+    # exceptions and longjmp: JSPI traps if a JS invoke_* trampoline sits between the promising
+    # export and a suspend point. Single-threaded (no -pthread) and no Asyncify.
+    add_compile_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+    add_link_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+    # The ISA headers reuse their x86 SIMD formulations through Emscripten's SSE/AVX2 compat
+    # headers. Deliberately no -mfma: Emscripten's _mm_fmadd_ps is an unfused mul+add, while
+    # without __FMA__ the code takes its correctly rounded scalar fmaf path.
+    set(MKW_WEB_SIMD_FLAGS -msimd128 -msse4.2 -mavx2)
+elseif(WIN32 AND MINGW AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
     set(MKW_PLATFORM_WINDOWS TRUE)
 elseif(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64|arm64|ARM64)$")
     set(MKW_PLATFORM_MACOS TRUE)
@@ -156,7 +169,8 @@ endif()
 # and would also add a dependency Windows never links.
 add_library(mkw_mbedtls INTERFACE)
 add_library(mkw::mbedtls ALIAS mkw_mbedtls)
-if(NOT MKW_PLATFORM_WINDOWS)
+# The browser has no raw sockets, so the web build compiles guest networking out and needs no TLS.
+if(NOT MKW_PLATFORM_WINDOWS AND NOT MKW_PLATFORM_WEB)
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/MbedTLSPin.cmake")
     if(NOT MKW_NATIVE_PREBUILT_DIR)
         include(FetchContent)
@@ -321,7 +335,20 @@ endif()
 # a registration file is silently never compiled and never errors. The stale-glob
 # failure mode is worth far more than the milliseconds.
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
-if(MKW_PLATFORM_MACOS)
+# src/platform/web/ holds browser replacements for native-only sources.
+if(MKW_PLATFORM_WEB)
+    list(REMOVE_ITEM SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/hle/net/network_ssl.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/discord_presence.cpp")
+else()
+    list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_wasm.cpp")
+    list(FILTER SOURCES EXCLUDE REGEX "/src/platform/web/")
+endif()
+if(MKW_PLATFORM_WEB)
+    # Handled above.
+elseif(MKW_PLATFORM_MACOS)
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp")
     if(MKW_PLATFORM_MACOS_ARM64)
         # HostContext's Apple Silicon backend is implemented in a small assembly
@@ -344,7 +371,9 @@ set(MKW_CPU_BASELINE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/host_cpu_baseline.cpp
 list(REMOVE_ITEM SOURCES ${MKW_BASE_PRODUCT_SOURCE} ${MKW_RETRO_REWIND_PRODUCT_SOURCE}
      ${MKW_CPU_BASELINE_SOURCE} ${MKW_PLATFORM_SOURCE})
 
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/PlatformTests.cmake")
+if(NOT MKW_PLATFORM_WEB)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/PlatformTests.cmake")
+endif()
 
 # The translator emits the complete, content-addressed source graph. Consuming
 # this one manifest keeps configure independent of the 28k generated function
@@ -402,6 +431,25 @@ else()
             endif()
         endif()
         set_target_properties(mkw_macos_native_compile PROPERTIES UNITY_BUILD OFF)
+    endif()
+    if(MKW_PLATFORM_WEB)
+        # Compile-only audit of the runtime for the browser, runnable without game data (the
+        # macOS audit above, for wasm). Sources that need translator output are left out.
+        set(MKW_WEB_RUNTIME_AUDIT_SOURCES ${SOURCES})
+        list(REMOVE_ITEM MKW_WEB_RUNTIME_AUDIT_SOURCES
+            "${CMAKE_CURRENT_LIST_DIR}/src/abi_bridge.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/src/hle/os/os_alarm.cpp")
+        add_library(mkw_web_runtime_compile OBJECT ${MKW_WEB_RUNTIME_AUDIT_SOURCES})
+        target_include_directories(mkw_web_runtime_compile PRIVATE
+            "${CMAKE_CURRENT_LIST_DIR}/include" "${CMAKE_CURRENT_LIST_DIR}/src"
+            "${CMAKE_CURRENT_LIST_DIR}/.." "${CMAKE_CURRENT_LIST_DIR}/../aurora-main/include")
+        target_compile_features(mkw_web_runtime_compile PRIVATE cxx_std_20)
+        target_compile_definitions(mkw_web_runtime_compile PRIVATE SDL_MAIN_HANDLED TARGET_PC)
+        target_compile_options(mkw_web_runtime_compile PRIVATE ${MKW_WEB_SIMD_FLAGS} -O2 -w)
+        target_link_libraries(mkw_web_runtime_compile PRIVATE
+            aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx
+            mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp)
+        set_target_properties(mkw_web_runtime_compile PROPERTIES UNITY_BUILD OFF)
     endif()
     add_custom_target(mkw_platform_paths_check DEPENDS mkw_platform)
     message(STATUS "Translated product targets disabled (MKW_BUILD_PRODUCTS=OFF)")

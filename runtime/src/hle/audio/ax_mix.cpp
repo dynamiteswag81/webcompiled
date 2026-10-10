@@ -1336,6 +1336,10 @@ private:
     }
 
     bool EnsureMixWorker() {
+#if defined(__EMSCRIPTEN__)
+        // Single-threaded browser build: always mix inline on the guest thread.
+        return false;
+#endif
         if (m_mixThread.joinable()) {
             return true;
         }

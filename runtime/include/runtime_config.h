@@ -168,7 +168,10 @@ inline bool IsSupportedResolutionMultiplier(float value) {
 // Must stay in step with the backend table in main.cpp, which is what actually
 // maps these to AuroraBackend.
 inline bool IsSupportedGraphicsApi(std::string_view value) {
-#if defined(__APPLE__)
+#if defined(__EMSCRIPTEN__)
+    // The browser chooses the native API behind WebGPU.
+    static constexpr std::array<std::string_view, 1> values{"auto"};
+#elif defined(__APPLE__)
     static constexpr std::array<std::string_view, 2> values{"auto", "metal"};
 // only vulkan for linux
 #elif defined(__linux__)
@@ -960,7 +963,13 @@ inline std::string DisplayMode(std::string fallback = "windowed") {
 }
 
 inline bool NetworkEnabled(bool fallback = true) {
+#if defined(__EMSCRIPTEN__)
+    // Browsers have no raw sockets: the web build always runs offline.
+    (void)fallback;
+    return false;
+#else
     return Get().networkEnabled.value_or(fallback);
+#endif
 }
 
 inline std::string NandRoot(std::string fallback = "") {
