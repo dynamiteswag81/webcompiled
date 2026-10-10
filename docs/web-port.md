@@ -108,6 +108,42 @@ JSPI does not need `SharedArrayBuffer`, so no COOP/COEP is strictly required.
 `web/serve.py` serves `web/dist` plus the user's extracted `DATA/` with Range
 support on `http://localhost:8080`.
 
+## Division of labor
+
+Two workers run in parallel. Ownership is by directory, so branches merge without conflicts.
+
+| | **Local session** (has the game dump) | **Cloud session** (no game data) |
+| --- | --- | --- |
+| Branch | `web-port` | `web-aurora` (merged into `web-port` by the local session) |
+| Owns | `runtime/`, `web/`, `translator/`, `projects/`, root CMake, this doc | `aurora-main/` only |
+| Work plan items | 1, 3, 4, 5, 6, 7, 8, 9, 10 | 2 (+ aurora-side parts of 10) |
+| Verifies with | the real game in Chrome | aurora's own example in Chrome |
+
+### Contract for the aurora port (cloud)
+So the runtime can link the result without rework:
+
+* Build with `emcmake cmake -G Ninja` and switch everything on `EMSCRIPTEN` inside
+  `aurora-main/` CMake. Don't add new required cache variables.
+* Keep the existing target names: `aurora::core`, `aurora::gx`, `aurora::pad`,
+  `aurora::si`, `aurora::vi`, `aurora::mtx`, plus whatever `aurora::main` needs.
+* Compile flags must match the final product: `-fwasm-exceptions`,
+  `-sSUPPORT_LONGJMP=wasm`. Link the test page with `-sJSPI`.
+  Do **not** use `-pthread` or Asyncify.
+* WebGPU via `--use-port=emdawnwebgpu`. Async waits (adapter/device request,
+  `MapAsync` readbacks in `efb_ram_copy.cpp` / `depth_peek.cpp`) should block
+  through `wgpu::Instance::WaitAny` (works under JSPI), not spin.
+* Single-threaded: frame worker, presenter, pipeline workers, pipeline cache
+  writer and frame-interpolation workers all off/inline under `__EMSCRIPTEN__`.
+  Pipelines compile synchronously. Disable the sqlite pipeline cache and
+  Dawn blob cache on the web.
+* Surface from the `#canvas` selector; size follows the canvas CSS size ×
+  `devicePixelRatio`.
+* No aurora function that may suspend (anything calling `WaitAny`) may run
+  from a JS callback (`emscripten_set_*_callback`, SDL event watch). Only
+  from the main call stack.
+* Write a short "aurora web notes" section at the end of this doc: what was
+  stubbed, known gaps, and the exact flags used.
+
 ## Work plan
 
 1. [ ] `web/` CMake toolchain wrapper + `web/build.ps1` / `build.sh`
